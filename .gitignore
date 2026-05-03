@@ -1,0 +1,38 @@
+# OS and editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Arduino / embedded build outputs
+build/
+build-*/
+.arduino/
+*.bin
+*.elf
+*.hex
+*.uf2
+*.map
+*.o
+*.a
+*.d
+
+# PlatformIO, if someone experiments with it later
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Local logs and scratch files
+*.log
+*.tmp
+*.bak
+*.orig
+
+# Do not commit private SD dumps with credentials.
+# Keep the sanitized sample files in sd_card/.
+sd_private/
+private_sd/
+secrets/
