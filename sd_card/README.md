@@ -1,4 +1,4 @@
-# SD Card Starter Files
+# ESP32 WiFi Radio SD Card Starter Files
 
 Copy these files to the root of the microSD card:
 

@@ -1,0 +1,2 @@
+# label|firmware_file|notes
+ESP32 WiFi Radio|radio_lvgl.bin|Official LVGL radio firmware

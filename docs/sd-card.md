@@ -1,17 +1,15 @@
 # SD Card Files
 
-Copy the sample files from `sd_card/` to the root of the microSD card:
+## ESP32 WiFi Radio
+
+Copy the sample files from `sd_card/` to the root of the radio microSD card:
 
 ```text
 /radio.cfg
 /stations.csv
-/covers/
-/logo.bmp        optional boot logo
+/covers/       optional, created by firmware when possible
+/logo.bmp      optional boot logo
 ```
-
-`/covers/` is created by the sketches when possible. `logo.bmp` is optional.
-
-## radio.cfg
 
 `radio.cfg` stores runtime settings. The sample file keeps Wi-Fi blank:
 
@@ -23,13 +21,8 @@ wifi_password=
 Fill those values on your own SD card, or leave them blank and use the setup AP
 at `http://192.168.4.1`.
 
-The stable `InternetRadio` project treats SD as the source of truth. If SD,
-`/radio.cfg`, or `/stations.csv` is missing, it shows an error on the display and
-uses the red LED error state. The AP can still be used to write config back to
-SD when a card is mounted.
-
-The `esp32radioLVGL` fork currently keeps the older fallback behavior and can
-create default files when SD is mounted.
+For the ESP32-C6 pilot link, the radio writes `remote_paired_mac=` into
+`/radio.cfg` during pairing. Leave that value empty in a fresh SD image.
 
 ## stations.csv
 
@@ -39,15 +32,28 @@ Station rows use this format:
 Station name|stream_url|optional_cover_bmp_url
 ```
 
-The third field is optional. Cover downloading currently expects small plain
-`http://` BMP files.
+The third field is optional. Cover downloading expects small plain `http://` BMP
+files. If cover art is missing or invalid, the UI draws a station badge.
 
-Example:
+The radio loads up to 50 station rows.
+
+## ESP32 Bin Loader
+
+The loader SD card uses a separate `/apps` folder:
 
 ```text
-Groove Salad|http://ice5.somafm.com/groovesalad-128-mp3
-Drone Zone|http://ice5.somafm.com/dronezone-128-mp3
+/apps/
+  manifest.txt
+  radio_lvgl.bin
 ```
+
+Manifest rows use:
+
+```text
+label|firmware_file|notes
+```
+
+Do not use merged firmware images in `/apps`; use the sketch app `.bin`.
 
 ## Safety
 

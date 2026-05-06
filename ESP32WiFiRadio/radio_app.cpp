@@ -4,9 +4,12 @@
 #include <Adafruit_NeoPixel.h>
 #include <Audio.h>
 #include <DNSServer.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 #include <lvgl.h>
 #include <Preferences.h>
 #include <SD_MMC.h>
+#include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -16,6 +19,7 @@
 #include "../hardware_specs/lcdwiki-esp32-s3-es3c28p/arduino_gfx_display.h"
 #include "../hardware_specs/lcdwiki-esp32-s3-es3c28p/lcdwiki_es3c28p_config.h"
 #include "../hardware_specs/lcdwiki-esp32-s3-es3c28p/touch_ft6336.h"
+#include "../shared/radio_remote_protocol.h"
 
 #define DEBUG_PORT Serial0
 
@@ -66,7 +70,9 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples, bool *continueI2S
 
 namespace {
 
-static constexpr uint8_t MAX_STATIONS = 24;
+static constexpr uint8_t MAX_STATIONS = 50;
+static constexpr char APP_NAME[] = "ESP32 WiFi Radio";
+static constexpr char APP_VERSION[] = "1.0";
 static constexpr uint8_t DEFAULT_VOLUME = 13;
 static constexpr uint8_t MAX_VOLUME = 21;
 static constexpr uint16_t DEFAULT_TOUCH_DEBOUNCE_MS = 170;
@@ -82,6 +88,13 @@ static constexpr uint16_t DEFAULT_BATTERY_MAX_MV = 4200;
 static constexpr uint16_t DEFAULT_BATTERY_SCALE_PERMILLE = 2000;
 static constexpr uint16_t DEFAULT_CLOCK_REFRESH_MS = 1000;
 static constexpr uint32_t NTP_RECONFIGURE_MS = 3600000UL;
+static constexpr uint16_t REMOTE_STATUS_MS = 1000;
+static constexpr uint16_t REMOTE_PAIR_ADVERT_MS = 1000;
+static constexpr uint32_t REMOTE_PAIR_WINDOW_MS = 120000UL;
+static constexpr uint32_t REMOTE_LINK_TIMEOUT_MS = 10000UL;
+static constexpr uint32_t SCREEN_SAVER_MS = 45000UL;
+static constexpr uint32_t SCREEN_SAVER_REFRESH_MS = 60000UL;
+static constexpr uint32_t TRACE_AUTO_OFF_MS = 60000UL;
 static constexpr char DEFAULT_NTP_SERVER[] = "pool.ntp.org";
 static constexpr char DEFAULT_TIMEZONE[] = "CET-1CEST,M3.5.0,M10.5.0/3";
 static constexpr uint8_t LVGL_BUFFER_ROWS = 36;
@@ -96,6 +109,7 @@ static constexpr char COVERS_DIR[] = "/covers";
 
 static const IPAddress AP_IP(192, 168, 4, 1);
 static const IPAddress AP_NETMASK(255, 255, 255, 0);
+static const uint8_t ESPNOW_BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 static constexpr uint16_t C_BLACK = 0x0000;
 static constexpr uint16_t C_WHITE = 0xFFFF;
@@ -176,6 +190,7 @@ enum class LvglAction : intptr_t {
   ReloadSd,
   ReconnectWifi,
   Theme,
+  PairRemote,
   ClearWifi,
   Back,
 };
@@ -229,6 +244,14 @@ bool ntpEnabled = true;
 bool ntpConfigured = false;
 bool clockValid = false;
 bool clock24h = true;
+bool remoteEnabled = true;
+bool remoteReady = false;
+bool remotePeerValid = false;
+bool remotePairingMode = false;
+bool remotePilotBatteryValid = false;
+bool remoteUiLinkActive = false;
+bool otaInProgress = false;
+bool screenSaverActive = false;
 
 uint32_t lastTouchMs = 0;
 uint32_t lastWifiRetryMs = 0;
@@ -241,6 +264,17 @@ uint32_t lastSystemStatusMs = 0;
 uint32_t lastLvglTickMs = 0;
 uint32_t lastClockMs = 0;
 uint32_t lastNtpConfigMs = 0;
+uint32_t remotePairUntilMs = 0;
+uint32_t remoteLastPairAdvertMs = 0;
+uint32_t remoteLastStatusMs = 0;
+uint32_t remoteLastSeenMs = 0;
+uint32_t cpuStatsWindowMs = 0;
+uint32_t cpuStatsBusyUs = 0;
+uint32_t cpuLoopMaxUs = 0;
+uint32_t lastUiActivityMs = 0;
+uint32_t lastScreenSaverDrawMs = 0;
+uint32_t i2sTraceUntilMs = 0;
+uint32_t codecTraceUntilMs = 0;
 uint32_t wifiRetryMs = DEFAULT_WIFI_RETRY_MS;
 uint32_t wifiConnectTimeoutMs = DEFAULT_WIFI_CONNECT_TIMEOUT_MS;
 uint32_t statusRefreshMs = DEFAULT_STATUS_REFRESH_MS;
@@ -254,6 +288,10 @@ uint16_t batteryAdcMv = 0;
 uint16_t batteryMv = 0;
 uint8_t ledBrightness = DEFAULT_LED_BRIGHTNESS;
 uint8_t batteryPercent = 0;
+uint8_t remotePilotBatteryPercent = 0;
+uint8_t otaProgressPercent = 0;
+uint16_t remoteSeq = 0;
+uint16_t cpuMainLoadPermille = 0;
 int8_t wifiSignalBars = 0;
 int8_t wifiRssiDbm = 0;
 int startupStation = -1;
@@ -269,9 +307,16 @@ char apName[32] = {0};
 char streamTitle[128] = {0};
 char audioStatus[96] = "Ready";
 char clockText[16] = "--:--";
+char otaStatusText[80] = "OTA idle";
 String serialLine;
 String ntpServer = DEFAULT_NTP_SERVER;
 String timezoneSpec = DEFAULT_TIMEZONE;
+String remotePairedMac;
+uint8_t remotePeerMac[6] = {0};
+uint8_t remoteRxMac[6] = {0};
+RadioRemotePacket remoteRxPacket;
+volatile bool remoteRxPending = false;
+portMUX_TYPE remoteRxMux = portMUX_INITIALIZER_UNLOCKED;
 
 lv_display_t *lvglDisplay = nullptr;
 lv_indev_t *lvglInput = nullptr;
@@ -288,6 +333,7 @@ lv_obj_t *lvBatteryTip = nullptr;
 lv_obj_t *lvBatteryCharge = nullptr;
 lv_obj_t *lvSd = nullptr;
 lv_obj_t *lvPlayState = nullptr;
+lv_obj_t *lvRemote = nullptr;
 lv_obj_t *lvNetwork = nullptr;
 lv_obj_t *lvNowPlaying = nullptr;
 lv_obj_t *lvStation = nullptr;
@@ -304,6 +350,13 @@ lv_obj_t *lvButtonVolUp = nullptr;
 lv_obj_t *lvMenuStatus = nullptr;
 lv_obj_t *lvMenuTheme = nullptr;
 lv_obj_t *lvMenuAp = nullptr;
+lv_obj_t *lvMenuRemote = nullptr;
+lv_obj_t *lvSaverClock = nullptr;
+lv_obj_t *lvSaverStation = nullptr;
+lv_obj_t *lvSaverStatus = nullptr;
+lv_obj_t *lvSaverRadioBattery = nullptr;
+lv_obj_t *lvSaverPilotBattery = nullptr;
+lv_obj_t *lvSaverLink = nullptr;
 lv_obj_t *lvBootTitle = nullptr;
 lv_obj_t *lvBootLine = nullptr;
 lv_obj_t *lvBootPercent = nullptr;
@@ -321,7 +374,7 @@ const char DEFAULT_STATIONS[] =
   "Deep Space One|http://ice5.somafm.com/deepspaceone-128-mp3\n";
 
 const char DEFAULT_CONFIG[] =
-  "# LCDWiki Internet Radio config\n"
+  "# ESP32 WiFi Radio config\n"
   "# WiFi values are plain text on SD. Leave wifi_ssid empty to keep NVS/AP settings.\n"
   "# theme: ocean, forest, sunset, mono, aurora, ember, berry, ice, mint, plum, steel, amber, neon, wine\n"
   "theme=ocean\n"
@@ -339,6 +392,8 @@ const char DEFAULT_CONFIG[] =
   "ntp_server=pool.ntp.org\n"
   "timezone=CET-1CEST,M3.5.0,M10.5.0/3\n"
   "clock_24h=1\n"
+  "remote_enabled=1\n"
+  "remote_paired_mac=\n"
   "touch_debounce_ms=170\n"
   "battery_enabled=1\n"
   "battery_min_mv=3300\n"
@@ -357,7 +412,8 @@ const char DEFAULT_CONFIG[] =
   "# led effects: off, solid, breathe, blink, vu\n"
   "# startup_station: last or station index\n"
   "# safe ranges: volume 0..21, led_brightness 0..100, retry 5..120 s, timeout 5..60 s\n"
-  "# battery_scale_permille default 2000 means ADC voltage times 2.000\n";
+  "# battery_scale_permille default 2000 means ADC voltage times 2.000\n"
+  "# remote_paired_mac is written by the ESP32-C6 pilot pairing flow\n";
 
 const ThemeDef THEMES[] = {
   {"ocean", "Ocean", C_BLUE, C_DARK, C_PANEL, C_PANEL, C_CYAN, C_GREEN, 0, 54, 70},
@@ -400,6 +456,28 @@ int8_t wifiBarsFromRssi(int rssi);
 void configureNtp(bool force = false);
 void updateClock(bool force = false);
 String clockStatusText();
+String macToString(const uint8_t mac[6]);
+bool parseMacAddress(String value, uint8_t mac[6]);
+bool macEquals(const uint8_t a[6], const uint8_t b[6]);
+bool macIsEmpty(const uint8_t mac[6]);
+uint8_t wifiPrimaryChannel();
+void initRemoteLink();
+void serviceRemoteLink();
+void remoteOnReceive(const esp_now_recv_info_t *info, const uint8_t *data, int len);
+bool remoteAddPeer(const uint8_t mac[6]);
+void remoteLoadPeerFromConfig();
+void remoteBeginPairing();
+void remoteStopPairing();
+void remoteForgetPeer();
+void remoteStorePeer(const uint8_t mac[6]);
+void remoteHandlePacket(const RadioRemotePacket &packet, const uint8_t mac[6]);
+void remoteFillStatusPacket(RadioRemotePacket &packet, uint8_t type, uint8_t command = RADIO_REMOTE_CMD_NONE);
+bool remoteSendPacket(const uint8_t dest[6], uint8_t type, uint8_t command = RADIO_REMOTE_CMD_NONE);
+void remoteSendPairAdvert(bool force = false);
+void remoteSendStatus(bool force = false);
+String remoteStatusText();
+bool remoteLinkActive();
+void updateCpuStats(uint32_t loopStartUs);
 bool initLvglUi();
 void serviceLvgl();
 void lvglBuildBootScreen();
@@ -428,12 +506,20 @@ void lvglSyncHeader();
 void lvglSyncMain();
 void lvglSyncMenu();
 String lvglCoverInitials();
+void registerUiActivity();
+bool wakeScreenSaver();
+void serviceScreenSaver();
+void serviceTraceTimeouts();
+void lvglBuildScreenSaver();
+void lvglSyncScreenSaver();
+void drawScreenSaver();
 void setLedMode(LedMode mode);
 void updateLed();
 void initPixel();
 void initDebug();
 void initApName();
 void drawBoot(const char *line);
+void drawOtaProgress(const char *line, uint8_t percent, bool error = false);
 void drawUi();
 void drawMain(bool fullRedraw);
 void drawMenu(bool fullRedraw);
@@ -493,6 +579,11 @@ void handleStationsSave();
 void handleReboot();
 void handleClearWifi();
 void handleApOff();
+void handleRemotePair();
+void handleRemoteForget();
+void handleOtaPage();
+void handleOtaDone();
+void handleOtaUpload();
 void handleNotFound();
 void startStation(int index);
 void stopAudio();
@@ -687,6 +778,8 @@ void storeRuntimeConfigToPrefs() {
   prefs.putString("ntpServer", ntpServer);
   prefs.putString("tz", timezoneSpec);
   prefs.putBool("clock24h", clock24h);
+  prefs.putBool("remoteEn", remoteEnabled);
+  prefs.putString("remoteMac", remotePairedMac);
   prefs.putBool("batEn", batteryEnabled);
   prefs.putUInt("batMinMv", batteryMinMv);
   prefs.putUInt("batMaxMv", batteryMaxMv);
@@ -842,6 +935,419 @@ String clockStatusText() {
   return text;
 }
 
+String macToString(const uint8_t mac[6]) {
+  char text[18];
+  snprintf(text, sizeof(text), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(text);
+}
+
+bool parseMacAddress(String value, uint8_t mac[6]) {
+  value.trim();
+  if (!value.length()) {
+    memset(mac, 0, 6);
+    return false;
+  }
+  unsigned int parts[6] = {0};
+  if (sscanf(value.c_str(), "%x:%x:%x:%x:%x:%x",
+             &parts[0], &parts[1], &parts[2], &parts[3], &parts[4], &parts[5]) != 6) {
+    memset(mac, 0, 6);
+    return false;
+  }
+  for (uint8_t i = 0; i < 6; i++) {
+    if (parts[i] > 255) {
+      memset(mac, 0, 6);
+      return false;
+    }
+    mac[i] = static_cast<uint8_t>(parts[i]);
+  }
+  return !macIsEmpty(mac);
+}
+
+bool macEquals(const uint8_t a[6], const uint8_t b[6]) {
+  return memcmp(a, b, 6) == 0;
+}
+
+bool macIsEmpty(const uint8_t mac[6]) {
+  const uint8_t empty[6] = {0};
+  return memcmp(mac, empty, 6) == 0;
+}
+
+uint8_t wifiPrimaryChannel() {
+  uint8_t channel = 0;
+  wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+  if (esp_wifi_get_channel(&channel, &second) != ESP_OK || channel == 0) {
+    return 1;
+  }
+  return channel;
+}
+
+void remoteLoadPeerFromConfig() {
+  remotePeerValid = parseMacAddress(remotePairedMac, remotePeerMac);
+  if (!remotePeerValid) {
+    remotePairedMac = "";
+  }
+}
+
+bool remoteAddPeer(const uint8_t mac[6]) {
+  if (!remoteReady || macIsEmpty(mac)) {
+    return false;
+  }
+  if (esp_now_is_peer_exist(mac)) {
+    return true;
+  }
+
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, mac, 6);
+  peer.channel = 0;
+  peer.encrypt = false;
+  peer.ifidx = WIFI_IF_STA;
+  const esp_err_t err = esp_now_add_peer(&peer);
+  if (err == ESP_OK || err == ESP_ERR_ESPNOW_EXIST) {
+    return true;
+  }
+  logf("ESP-NOW add peer failed %s err=0x%X", macToString(mac).c_str(), static_cast<unsigned>(err));
+  return false;
+}
+
+void initRemoteLink() {
+  if (!remoteEnabled) {
+    return;
+  }
+  if (remoteReady) {
+    if (remotePeerValid) {
+      remoteAddPeer(remotePeerMac);
+    }
+    return;
+  }
+
+  WiFi.mode(apActive ? WIFI_AP_STA : WIFI_STA);
+  WiFi.setSleep(false);
+  const esp_err_t err = esp_now_init();
+  if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
+    logf("ESP-NOW init failed err=0x%X", static_cast<unsigned>(err));
+    return;
+  }
+
+  remoteReady = true;
+  esp_now_register_recv_cb(remoteOnReceive);
+  remoteAddPeer(ESPNOW_BROADCAST_MAC);
+  if (remotePeerValid) {
+    remoteAddPeer(remotePeerMac);
+  }
+  logf("ESP-NOW remote ready channel=%u peer=%s",
+       wifiPrimaryChannel(),
+       remotePeerValid ? remotePairedMac.c_str() : "<none>");
+}
+
+bool remoteLinkActive() {
+  return remotePeerValid && remoteLastSeenMs != 0 && millis() - remoteLastSeenMs < REMOTE_LINK_TIMEOUT_MS;
+}
+
+String remoteStatusText() {
+  if (!remoteEnabled) {
+    return "disabled";
+  }
+  if (remotePairingMode) {
+    const uint32_t left = remotePairUntilMs > millis() ? (remotePairUntilMs - millis()) / 1000UL : 0;
+    return String("pairing ") + String(left) + "s";
+  }
+  if (!remotePeerValid) {
+    return "not paired";
+  }
+  String text = remotePairedMac;
+  text += remoteLinkActive() ? " online" : " offline";
+  if (remotePilotBatteryValid) {
+    text += " pilot ";
+    text += remotePilotBatteryPercent;
+    text += "%";
+  }
+  return text;
+}
+
+void remoteFillStatusPacket(RadioRemotePacket &packet, uint8_t type, uint8_t command) {
+  radioRemoteClearPacket(packet);
+  packet.type = type;
+  packet.seq = ++remoteSeq;
+  packet.stationIndex = currentStation < 0 ? 0 : static_cast<uint8_t>(currentStation);
+  packet.stationCount = stationCount;
+  packet.volume = volumeLevel;
+  packet.radioBatteryPercent = batteryPercent;
+  packet.radioBatteryValid = batteryValid ? 1 : 0;
+  packet.pilotBatteryPercent = remotePilotBatteryPercent;
+  packet.pilotBatteryValid = remotePilotBatteryValid ? 1 : 0;
+  packet.wifiBars = wifiSignalBars;
+  packet.wifiRssi = wifiRssiDbm;
+  packet.command = command;
+  packet.channel = wifiPrimaryChannel();
+  WiFi.macAddress(packet.radioMac);
+  if (remotePeerValid) {
+    memcpy(packet.pilotMac, remotePeerMac, 6);
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    packet.flags |= RADIO_REMOTE_FLAG_WIFI_CONNECTED;
+  }
+  if (playing) {
+    packet.flags |= RADIO_REMOTE_FLAG_PLAYING;
+  }
+  if (sdReady) {
+    packet.flags |= RADIO_REMOTE_FLAG_SD_READY;
+  }
+  if (apActive) {
+    packet.flags |= RADIO_REMOTE_FLAG_AP_ACTIVE;
+  }
+  if (remotePairingMode) {
+    packet.flags |= RADIO_REMOTE_FLAG_PAIRING;
+  }
+  if (remoteLinkActive()) {
+    packet.flags |= RADIO_REMOTE_FLAG_REMOTE_LINK;
+  }
+
+  const String stationName = stationCount ? stations[currentStation].name : String("No stations");
+  const String title = streamTitle[0] ? String(streamTitle) : String(audioStatus);
+  snprintf(packet.clock, sizeof(packet.clock), "%s", clockValid ? clockText : "--:--");
+  snprintf(packet.station, sizeof(packet.station), "%s", stationName.c_str());
+  snprintf(packet.title, sizeof(packet.title), "%s", title.c_str());
+}
+
+bool remoteSendPacket(const uint8_t dest[6], uint8_t type, uint8_t command) {
+  if (!remoteEnabled || !remoteReady) {
+    return false;
+  }
+  if (!remoteAddPeer(dest)) {
+    return false;
+  }
+  RadioRemotePacket packet;
+  remoteFillStatusPacket(packet, type, command);
+  const esp_err_t err = esp_now_send(dest, reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
+  return err == ESP_OK;
+}
+
+void remoteSendPairAdvert(bool force) {
+  if (!remotePairingMode || !remoteReady) {
+    return;
+  }
+  const uint32_t now = millis();
+  if (!force && now - remoteLastPairAdvertMs < REMOTE_PAIR_ADVERT_MS) {
+    return;
+  }
+  remoteLastPairAdvertMs = now;
+  remoteSendPacket(ESPNOW_BROADCAST_MAC, RADIO_REMOTE_PAIR_ADVERT);
+}
+
+void remoteSendStatus(bool force) {
+  if (!remotePeerValid || !remoteReady) {
+    return;
+  }
+  const uint32_t now = millis();
+  if (!force && now - remoteLastStatusMs < REMOTE_STATUS_MS) {
+    return;
+  }
+  remoteLastStatusMs = now;
+  remoteSendPacket(remotePeerMac, RADIO_REMOTE_STATUS);
+}
+
+void remoteBeginPairing() {
+  if (!remoteEnabled) {
+    setStatus("Pilot pairing disabled");
+    return;
+  }
+  initRemoteLink();
+  if (!remoteReady) {
+    setStatus("ESP-NOW remote not ready");
+    errorUntilMs = millis() + 3500;
+    return;
+  }
+  remotePairingMode = true;
+  remotePairUntilMs = millis() + REMOTE_PAIR_WINDOW_MS;
+  remoteLastPairAdvertMs = 0;
+  remoteSendPairAdvert(true);
+  setStatus("Pilot pairing 120s");
+  invalidateUi(true);
+}
+
+void remoteStopPairing() {
+  if (!remotePairingMode) {
+    return;
+  }
+  remotePairingMode = false;
+  remotePairUntilMs = 0;
+  setStatus(remotePeerValid ? "Pilot paired" : "Pilot pairing ended");
+  invalidateUi(true);
+}
+
+void remoteForgetPeer() {
+  remotePeerValid = false;
+  remotePairedMac = "";
+  memset(remotePeerMac, 0, sizeof(remotePeerMac));
+  remoteLastSeenMs = 0;
+  remotePilotBatteryValid = false;
+  prefs.remove("remoteMac");
+  markConfigDirty();
+  saveRuntimeConfig(true);
+  setStatus("Pilot pairing cleared");
+  invalidateUi(true);
+}
+
+void remoteStorePeer(const uint8_t mac[6]) {
+  if (macIsEmpty(mac)) {
+    return;
+  }
+  memcpy(remotePeerMac, mac, 6);
+  remotePeerValid = true;
+  remotePairedMac = macToString(mac);
+  prefs.putString("remoteMac", remotePairedMac);
+  remoteAddPeer(remotePeerMac);
+  remoteLastSeenMs = millis();
+  markConfigDirty();
+  saveRuntimeConfig(true);
+  setStatus("Pilot paired %s", remotePairedMac.c_str());
+  invalidateUi(true);
+}
+
+void remoteHandlePacket(const RadioRemotePacket &packet, const uint8_t mac[6]) {
+  if (!radioRemotePacketValid(packet)) {
+    return;
+  }
+
+  if (packet.pilotBatteryValid) {
+    remotePilotBatteryValid = true;
+    remotePilotBatteryPercent = packet.pilotBatteryPercent;
+  }
+
+  if (packet.type == RADIO_REMOTE_PAIR_REQUEST) {
+    if (remotePairingMode || (remotePeerValid && macEquals(mac, remotePeerMac))) {
+      remoteStorePeer(mac);
+      remotePairingMode = false;
+      remoteSendPacket(remotePeerMac, RADIO_REMOTE_PAIR_ACK);
+      remoteSendStatus(true);
+    }
+    return;
+  }
+
+  if (!remotePeerValid || !macEquals(mac, remotePeerMac)) {
+    return;
+  }
+
+  remoteLastSeenMs = millis();
+  if (packet.type == RADIO_REMOTE_PING) {
+    remoteSendStatus(true);
+    return;
+  }
+  if (packet.type != RADIO_REMOTE_COMMAND) {
+    return;
+  }
+
+  registerUiActivity();
+  switch (packet.command) {
+    case RADIO_REMOTE_CMD_PREV:
+      stationNext(-1);
+      break;
+    case RADIO_REMOTE_CMD_NEXT:
+      stationNext(1);
+      break;
+    case RADIO_REMOTE_CMD_VOL_DOWN:
+      setVolumeLevel(volumeLevel > 0 ? volumeLevel - 1 : 0);
+      break;
+    case RADIO_REMOTE_CMD_VOL_UP:
+      setVolumeLevel(volumeLevel >= MAX_VOLUME ? MAX_VOLUME : volumeLevel + 1);
+      break;
+    case RADIO_REMOTE_CMD_TOGGLE:
+      togglePlay();
+      break;
+    case RADIO_REMOTE_CMD_PLAY:
+      startStation(currentStation);
+      break;
+    case RADIO_REMOTE_CMD_STOP:
+      stopAudio();
+      break;
+    default:
+      break;
+  }
+  remoteSendStatus(true);
+}
+
+void remoteOnReceive(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  if (!info || !info->src_addr || !data || len != static_cast<int>(sizeof(RadioRemotePacket))) {
+    return;
+  }
+  RadioRemotePacket packet;
+  memcpy(&packet, data, sizeof(packet));
+  if (!radioRemotePacketValid(packet)) {
+    return;
+  }
+
+  portENTER_CRITICAL(&remoteRxMux);
+  memcpy(&remoteRxPacket, &packet, sizeof(remoteRxPacket));
+  memcpy(remoteRxMac, info->src_addr, 6);
+  remoteRxPending = true;
+  portEXIT_CRITICAL(&remoteRxMux);
+}
+
+void serviceRemoteLink() {
+  if (!remoteEnabled) {
+    if (remoteReady) {
+      esp_now_deinit();
+      remoteReady = false;
+      remotePairingMode = false;
+    }
+    return;
+  }
+
+  if (!remoteReady) {
+    initRemoteLink();
+  }
+
+  if (remoteRxPending) {
+    RadioRemotePacket packet;
+    uint8_t mac[6];
+    portENTER_CRITICAL(&remoteRxMux);
+    memcpy(&packet, &remoteRxPacket, sizeof(packet));
+    memcpy(mac, remoteRxMac, 6);
+    remoteRxPending = false;
+    portEXIT_CRITICAL(&remoteRxMux);
+    remoteHandlePacket(packet, mac);
+  }
+
+  const uint32_t now = millis();
+  if (remotePairingMode && now > remotePairUntilMs) {
+    remotePairingMode = false;
+    setStatus("Pilot pairing timeout");
+    invalidateUi(true);
+  }
+  remoteSendPairAdvert(false);
+  remoteSendStatus(false);
+  const bool active = remoteLinkActive();
+  if (active != remoteUiLinkActive) {
+    remoteUiLinkActive = active;
+    invalidateUi(false);
+  }
+}
+
+void updateCpuStats(uint32_t loopStartUs) {
+  const uint32_t busyUs = micros() - loopStartUs;
+  const uint32_t nowMs = millis();
+  if (cpuStatsWindowMs == 0) {
+    cpuStatsWindowMs = nowMs;
+  }
+  cpuStatsBusyUs += busyUs;
+  if (busyUs > cpuLoopMaxUs) {
+    cpuLoopMaxUs = busyUs;
+  }
+
+  const uint32_t elapsedMs = nowMs - cpuStatsWindowMs;
+  if (elapsedMs >= 1000) {
+    const uint64_t elapsedUs = static_cast<uint64_t>(elapsedMs) * 1000ULL;
+    uint32_t permille = elapsedUs ? static_cast<uint32_t>((static_cast<uint64_t>(cpuStatsBusyUs) * 1000ULL) / elapsedUs) : 0;
+    if (permille > 1000) {
+      permille = 1000;
+    }
+    cpuMainLoadPermille = static_cast<uint16_t>(permille);
+    cpuStatsBusyUs = 0;
+    cpuStatsWindowMs = nowMs;
+  }
+}
+
 bool initLvglUi() {
   if (!displayReady) {
     return false;
@@ -903,7 +1409,7 @@ void lvglBuildBootScreen() {
   lv_obj_set_style_border_width(top, 1, 0);
   lv_obj_set_style_border_color(top, lvColor565(C_SURFACE_3), 0);
 
-  lvBootTitle = lvMakeLabel(lvglRoot, "LVGL Radio", 18, 28, 204, 2, C_TEXT_MAIN);
+  lvBootTitle = lvMakeLabel(lvglRoot, APP_NAME, 18, 28, 204, 2, C_TEXT_MAIN);
   lv_obj_set_style_text_align(lvBootTitle, LV_TEXT_ALIGN_CENTER, 0);
 
   lv_obj_t *panel = lv_obj_create(lvglRoot);
@@ -999,6 +1505,15 @@ void lvglTouchRead(lv_indev_t *indev, lv_indev_data_t *data) {
   if (touchReady && touch.read(x, y)) {
     lastX = x;
     lastY = y;
+    if (screenSaverActive) {
+      wakeScreenSaver();
+      data->point.x = x;
+      data->point.y = y;
+      data->state = LV_INDEV_STATE_RELEASED;
+      return;
+    } else {
+      registerUiActivity();
+    }
     data->point.x = x;
     data->point.y = y;
     data->state = LV_INDEV_STATE_PRESSED;
@@ -1030,11 +1545,13 @@ lv_obj_t *lvMakeLabel(lv_obj_t *parent, const char *text, int16_t x, int16_t y, 
   lv_obj_t *label = lv_label_create(parent);
   lv_obj_set_pos(label, x, y);
   lv_obj_set_width(label, w);
-  lv_obj_set_height(label, fontSize > 1 ? 22 : 18);
+  lv_obj_set_height(label, fontSize >= 4 ? 42 : (fontSize > 1 ? 22 : 18));
   lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
   lv_label_set_text(label, text);
   lv_obj_set_style_text_color(label, lvColor565(color), 0);
-  if (fontSize > 1) {
+  if (fontSize >= 4) {
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_32, 0);
+  } else if (fontSize > 1) {
     lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
   }
   lv_obj_set_style_text_line_space(label, 0, 0);
@@ -1150,6 +1667,11 @@ void lvglButtonEvent(lv_event_t *event) {
   if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
     return;
   }
+  if (screenSaverActive) {
+    wakeScreenSaver();
+    return;
+  }
+  registerUiActivity();
   const LvglAction action = static_cast<LvglAction>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
   const int stationBase = static_cast<int>(LvglAction::Station0);
   const int actionValue = static_cast<int>(action);
@@ -1196,6 +1718,9 @@ void lvglButtonEvent(lv_event_t *event) {
       break;
     case LvglAction::Theme:
       cycleTheme();
+      break;
+    case LvglAction::PairRemote:
+      remoteBeginPairing();
       break;
     case LvglAction::ClearWifi:
       clearWifi();
@@ -1259,7 +1784,8 @@ void lvglBuildHeader(lv_obj_t *parent, const char *title) {
   lvBuildWifiIcon(header, 126, 17);
   lvBuildBatteryIcon(header, 148, 18);
   lvSd = lvMakeLabel(header, "", 190, 7, 42, 1, C_GREEN);
-  lvPlayState = lvMakeLabel(header, "", 190, 29, 42, 1, C_APP_ACCENT);
+  lvRemote = lvMakeLabel(header, "", 174, 29, 22, 1, C_TEXT_MUTED);
+  lvPlayState = lvMakeLabel(header, "", 200, 29, 32, 1, C_APP_ACCENT);
 }
 
 void lvglBuildMain() {
@@ -1308,12 +1834,13 @@ void lvglBuildMenu() {
   lv_obj_set_style_border_color(panel, lvColor565(C_SURFACE_3), 0);
   lvMenuStatus = lvMakeLabel(panel, "", 12, 14, 200, 1, C_TEXT_MUTED);
 
-  lvMenuAp = lvMakeButton(lvglRoot, apActive ? "AP Off" : "Start AP", 12, 114, 216, 31, apActive ? C_ORANGE : C_SURFACE_2, C_TEXT_MAIN, LvglAction::ApToggle);
-  lvMakeButton(lvglRoot, "Reload SD", 12, 150, 216, 31, C_SURFACE_2, C_TEXT_MAIN, LvglAction::ReloadSd);
-  lvMakeButton(lvglRoot, "Reconnect WiFi", 12, 186, 216, 31, C_SURFACE_2, C_TEXT_MAIN, LvglAction::ReconnectWifi);
-  lvMenuTheme = lvMakeButton(lvglRoot, String("Theme: ") + theme().label, 12, 222, 216, 31, C_APP_ACCENT, C_BLACK, LvglAction::Theme);
-  lvMakeButton(lvglRoot, "Clear WiFi", 12, 260, 104, 31, C_RED, C_WHITE, LvglAction::ClearWifi);
-  lvMakeButton(lvglRoot, "Back", 124, 260, 104, 31, C_SURFACE, C_TEXT_MAIN, LvglAction::Back);
+  lvMenuAp = lvMakeButton(lvglRoot, apActive ? "AP Off" : "Start AP", 12, 110, 216, 30, apActive ? C_ORANGE : C_SURFACE_2, C_TEXT_MAIN, LvglAction::ApToggle);
+  lvMakeButton(lvglRoot, "Reload SD", 12, 144, 216, 30, C_SURFACE_2, C_TEXT_MAIN, LvglAction::ReloadSd);
+  lvMakeButton(lvglRoot, "Reconnect WiFi", 12, 178, 216, 30, C_SURFACE_2, C_TEXT_MAIN, LvglAction::ReconnectWifi);
+  lvMenuTheme = lvMakeButton(lvglRoot, String("Theme: ") + theme().label, 12, 212, 216, 30, C_APP_ACCENT, C_BLACK, LvglAction::Theme);
+  lvMenuRemote = lvMakeButton(lvglRoot, remotePairingMode ? "Pairing..." : "Pair Pilot", 12, 246, 104, 30, remotePairingMode ? C_ORANGE : C_SURFACE_2, C_TEXT_MAIN, LvglAction::PairRemote);
+  lvMakeButton(lvglRoot, "Clear WiFi", 124, 246, 104, 30, C_RED, C_WHITE, LvglAction::ClearWifi);
+  lvMakeButton(lvglRoot, "Back", 12, 282, 216, 30, C_SURFACE, C_TEXT_MAIN, LvglAction::Back);
 }
 
 void lvglBuildUi(bool fullRedraw) {
@@ -1343,6 +1870,7 @@ void lvglBuildUi(bool fullRedraw) {
   lvBatteryCharge = nullptr;
   lvSd = nullptr;
   lvPlayState = nullptr;
+  lvRemote = nullptr;
   lvNetwork = nullptr;
   lvNowPlaying = nullptr;
   lvStation = nullptr;
@@ -1351,6 +1879,13 @@ void lvglBuildUi(bool fullRedraw) {
   lvMenuStatus = nullptr;
   lvMenuTheme = nullptr;
   lvMenuAp = nullptr;
+  lvMenuRemote = nullptr;
+  lvSaverClock = nullptr;
+  lvSaverStation = nullptr;
+  lvSaverStatus = nullptr;
+  lvSaverRadioBattery = nullptr;
+  lvSaverPilotBattery = nullptr;
+  lvSaverLink = nullptr;
   lvBootTitle = nullptr;
   lvBootLine = nullptr;
   lvBootPercent = nullptr;
@@ -1394,6 +1929,11 @@ void lvglSyncHeader() {
   if (lvPlayState) {
     lv_label_set_text(lvPlayState, playing ? "PLAY" : "STOP");
     lv_obj_set_style_text_color(lvPlayState, lvColor565(playing ? C_APP_ACCENT : C_TEXT_MUTED), 0);
+  }
+  if (lvRemote) {
+    const bool active = remoteLinkActive();
+    lv_label_set_text(lvRemote, active ? "P+" : (remotePeerValid ? "P-" : "P?"));
+    lv_obj_set_style_text_color(lvRemote, lvColor565(active ? C_GREEN : (remotePeerValid ? C_YELLOW : C_TEXT_MUTED)), 0);
   }
 }
 
@@ -1446,10 +1986,18 @@ void lvglSyncMenu() {
   lv_label_set_text(lvMenuStatus, (networkText() + "  " + String(audioStatus)).c_str());
   lvSetButtonText(lvMenuAp, apActive ? "AP Off" : "Start AP");
   lvSetButtonText(lvMenuTheme, String("Theme: ") + theme().label);
+  lvSetButtonText(lvMenuRemote, remotePairingMode ? "Pairing..." : "Pair Pilot");
+  if (lvMenuRemote) {
+    lv_obj_set_style_bg_color(lvMenuRemote, lvColor565(remotePairingMode ? C_ORANGE : C_SURFACE_2), 0);
+  }
 }
 
 void lvglSyncUi() {
   if (!lvglReady) {
+    return;
+  }
+  if (screenSaverActive) {
+    lvglSyncScreenSaver();
     return;
   }
   lvglSyncHeader();
@@ -1457,6 +2005,96 @@ void lvglSyncUi() {
     lvglSyncMenu();
   } else {
     lvglSyncMain();
+  }
+}
+
+void lvglBuildScreenSaver() {
+  if (!lvglReady) {
+    return;
+  }
+  lvglRoot = lv_screen_active();
+  lv_obj_clean(lvglRoot);
+  lv_obj_remove_style_all(lvglRoot);
+  lv_obj_set_style_bg_opa(lvglRoot, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(lvglRoot, lvColor565(C_BLACK), 0);
+  lv_obj_clear_flag(lvglRoot, LV_OBJ_FLAG_SCROLLABLE);
+
+  lvSaverClock = lvMakeLabel(lvglRoot, "--:--", 8, 42, 224, 4, C_WHITE);
+  lv_obj_set_style_text_align(lvSaverClock, LV_TEXT_ALIGN_CENTER, 0);
+  lvSaverStation = lvMakeLabel(lvglRoot, "", 16, 118, 208, 2, C_APP_ACCENT);
+  lv_obj_set_style_text_align(lvSaverStation, LV_TEXT_ALIGN_CENTER, 0);
+  lvSaverStatus = lvMakeLabel(lvglRoot, "", 16, 154, 208, 1, C_TEXT_MUTED);
+  lv_obj_set_style_text_align(lvSaverStatus, LV_TEXT_ALIGN_CENTER, 0);
+  lvSaverRadioBattery = lvMakeLabel(lvglRoot, "", 16, 194, 96, 1, C_GREEN);
+  lvSaverPilotBattery = lvMakeLabel(lvglRoot, "", 128, 194, 96, 1, C_GREEN);
+  lvSaverLink = lvMakeLabel(lvglRoot, "", 16, 224, 208, 1, C_YELLOW);
+  lv_obj_set_style_text_align(lvSaverLink, LV_TEXT_ALIGN_CENTER, 0);
+  lvMakeLabel(lvglRoot, "touch to wake", 70, 292, 120, 1, C_TEXT_MUTED);
+  lvglUiBuilt = true;
+}
+
+void lvglSyncScreenSaver() {
+  if (!lvSaverClock) {
+    return;
+  }
+  lv_label_set_text(lvSaverClock, clockValid ? clockText : "--:--");
+  lv_obj_set_style_text_color(lvSaverClock, lvColor565(clockValid ? C_WHITE : C_TEXT_MUTED), 0);
+  lv_label_set_text(lvSaverStation, stationCount ? stations[currentStation].name.c_str() : "No stations");
+  lv_label_set_text(lvSaverStatus, (String(playing ? "PLAY" : "STOP") + "  " + networkText()).c_str());
+  lv_label_set_text(lvSaverRadioBattery, (String("Radio ") + (batteryValid ? String(batteryPercent) + "%" : "--")).c_str());
+  lv_label_set_text(lvSaverPilotBattery, (String("Pilot ") + (remotePilotBatteryValid ? String(remotePilotBatteryPercent) + "%" : "--")).c_str());
+  const String link = String("WiFi ") + String(wifiSignalBars) + "/4  " + (remoteLinkActive() ? "PILOT ON" : (remotePeerValid ? "PILOT OFF" : "NO PILOT"));
+  lv_label_set_text(lvSaverLink, link.c_str());
+  lv_obj_set_style_text_color(lvSaverLink, lvColor565(remoteLinkActive() ? C_GREEN : C_YELLOW), 0);
+  lastScreenSaverDrawMs = millis();
+}
+
+void registerUiActivity() {
+  lastUiActivityMs = millis();
+  if (screenSaverActive) {
+    screenSaverActive = false;
+    display.setBacklight(true);
+    lvglUiBuilt = false;
+    invalidateUi(true);
+  }
+}
+
+bool wakeScreenSaver() {
+  if (!screenSaverActive) {
+    registerUiActivity();
+    return false;
+  }
+  registerUiActivity();
+  return true;
+}
+
+void serviceScreenSaver() {
+  if (!displayReady || otaInProgress) {
+    return;
+  }
+  const uint32_t now = millis();
+  if (!screenSaverActive && now - lastUiActivityMs >= SCREEN_SAVER_MS) {
+    screenSaverActive = true;
+    lvglUiBuilt = false;
+    lastScreenSaverDrawMs = 0;
+    uiDirty = true;
+    uiFullRedraw = true;
+  } else if (screenSaverActive && now - lastScreenSaverDrawMs >= SCREEN_SAVER_REFRESH_MS) {
+    uiDirty = true;
+  }
+}
+
+void serviceTraceTimeouts() {
+  const uint32_t now = millis();
+  if (i2sTrace && i2sTraceUntilMs && now > i2sTraceUntilMs) {
+    i2sTrace = false;
+    i2sTraceUntilMs = 0;
+    DEBUG_PORT.println("I2S trace auto OFF");
+  }
+  if (codecTrace && codecTraceUntilMs && now > codecTraceUntilMs) {
+    codecTrace = false;
+    codecTraceUntilMs = 0;
+    DEBUG_PORT.println("ES8311 I2C trace auto OFF");
   }
 }
 
@@ -1572,14 +2210,14 @@ void initDebug() {
   );
   delay(80);
   logf("");
-  logf("LCDWiki ES3C28P Internet Radio");
+  logf("%s %s", APP_NAME, APP_VERSION);
   logf("Debug UART: GPIO43 TX / GPIO44 RX, 115200 baud");
   logf("Chip: %s, PSRAM: %u bytes", ESP.getChipModel(), ESP.getPsramSize());
 }
 
 void initApName() {
   const uint32_t chip = static_cast<uint32_t>(ESP.getEfuseMac());
-  snprintf(apName, sizeof(apName), "LCDWikiRadio-%04X", chip & 0xFFFF);
+  snprintf(apName, sizeof(apName), "ESP32Radio-%04X", chip & 0xFFFF);
 }
 
 void drawBoot(const char *line) {
@@ -1592,11 +2230,60 @@ void drawBoot(const char *line) {
   gfx->setTextSize(2);
   gfx->setTextColor(C_CYAN);
   gfx->setCursor(8, 16);
-  gfx->print("LCDWiki Radio");
+  gfx->print(APP_NAME);
   gfx->setTextSize(1);
   gfx->setTextColor(C_DIM);
   gfx->setCursor(8, 48);
   gfx->print(line);
+}
+
+void drawOtaProgress(const char *line, uint8_t percent, bool error) {
+  if (percent > 100) {
+    percent = 100;
+  }
+  if (lvglReady) {
+    if (!lvglBootBuilt) {
+      lvglBuildBootScreen();
+    }
+    if (lvBootTitle) {
+      lv_label_set_text(lvBootTitle, "OTA update");
+      lv_obj_set_style_text_color(lvBootTitle, lvColor565(error ? C_RED : C_TEXT_MAIN), 0);
+    }
+    if (lvBootLine) {
+      lv_label_set_text(lvBootLine, line);
+      lv_obj_set_style_text_color(lvBootLine, lvColor565(error ? C_RED : C_TEXT_MAIN), 0);
+    }
+    if (lvBootPercent) {
+      lv_label_set_text(lvBootPercent, (String(percent) + "%").c_str());
+    }
+    if (lvBootBar) {
+      lv_obj_set_style_bg_color(lvBootBar, lvColor565(error ? C_RED : C_GREEN), LV_PART_INDICATOR);
+      lv_bar_set_value(lvBootBar, percent, LV_ANIM_OFF);
+    }
+    lvglBootPump(40);
+    return;
+  }
+
+  if (!displayReady) {
+    return;
+  }
+  Arduino_GFX *gfx = display.gfx();
+  gfx->fillScreen(C_BLACK);
+  gfx->setTextWrap(false);
+  gfx->setTextSize(2);
+  gfx->setTextColor(error ? C_RED : C_CYAN);
+  gfx->setCursor(18, 48);
+  gfx->print("OTA update");
+  gfx->setTextSize(1);
+  gfx->setTextColor(error ? C_RED : C_WHITE);
+  gfx->setCursor(18, 92);
+  gfx->print(clipped(String(line), 204, 1));
+  gfx->drawRect(18, 124, 204, 16, C_DIM);
+  gfx->fillRect(20, 126, (200 * percent) / 100, 12, error ? C_RED : C_GREEN);
+  gfx->setTextColor(C_DIM);
+  gfx->setCursor(18, 154);
+  gfx->print(percent);
+  gfx->print("%");
 }
 
 String clipped(const String &text, uint16_t pixels, uint8_t size) {
@@ -1637,6 +2324,32 @@ void drawButton(int16_t x, int16_t y, int16_t w, int16_t h, const String &label,
   const int16_t textY = (h - textH) / 2;
   gfx->setCursor(x + (textX > 4 ? textX : 4), y + (textY > 4 ? textY : 4));
   gfx->print(text);
+}
+
+void drawScreenSaver() {
+  Arduino_GFX *gfx = display.gfx();
+  gfx->fillScreen(C_BLACK);
+  gfx->setTextWrap(false);
+
+  const String clock = clockValid ? String(clockText) : String("--:--");
+  gfx->setTextSize(5);
+  gfx->setTextColor(clockValid ? C_WHITE : C_DIM);
+  gfx->setCursor((LVGL_SCREEN_W - static_cast<int16_t>(clock.length()) * 30) / 2, 54);
+  gfx->print(clock);
+
+  gfx->setTextSize(2);
+  gfx->setTextColor(C_APP_ACCENT);
+  const String station = stationCount ? stations[currentStation].name : String("No stations");
+  drawTextClip(18, 136, 204, station, C_APP_ACCENT, 2);
+
+  gfx->setTextSize(1);
+  drawTextClip(18, 170, 204, String(playing ? "PLAY" : "STOP") + "  " + networkText(), C_TEXT_MUTED, 1);
+  drawTextClip(18, 196, 96, String("Radio ") + (batteryValid ? String(batteryPercent) + "%" : "--"), C_GREEN, 1);
+  drawTextClip(126, 196, 96, String("Pilot ") + (remotePilotBatteryValid ? String(remotePilotBatteryPercent) + "%" : "--"), C_GREEN, 1);
+  const String link = String("WiFi ") + String(wifiSignalBars) + "/4  " + (remoteLinkActive() ? "PILOT ON" : (remotePeerValid ? "PILOT OFF" : "NO PILOT"));
+  drawTextClip(18, 224, 204, link, remoteLinkActive() ? C_GREEN : C_YELLOW, 1);
+  drawTextClip(70, 292, 120, "touch to wake", C_DIM, 1);
+  lastScreenSaverDrawMs = millis();
 }
 
 uint16_t read16(File &f) {
@@ -1833,7 +2546,8 @@ void drawHeader(const char *title) {
   drawWifiBars(126, 4);
   drawBatteryStatus(154, 3);
   drawTextClip(94, 20, 44, sdReady ? "SD" : "noSD", sdReady ? C_GREEN : C_YELLOW, 1);
-  drawTextClip(142, 20, 92, playing ? "PLAY" : "STOP", playing ? C_CYAN : C_DIM, 1);
+  drawTextClip(142, 20, 28, remoteLinkActive() ? "P+" : (remotePeerValid ? "P-" : "P?"), remoteLinkActive() ? C_GREEN : (remotePeerValid ? C_YELLOW : C_DIM), 1);
+  drawTextClip(172, 20, 62, playing ? "PLAY" : "STOP", playing ? C_CYAN : C_DIM, 1);
 }
 
 void drawMain(bool fullRedraw) {
@@ -1894,12 +2608,26 @@ void drawMenu(bool fullRedraw) {
   drawButton(12, 112, 216, 32, "Reload SD", t.button, C_WHITE);
   drawButton(12, 152, 216, 32, "Reconnect WiFi", t.button, C_WHITE);
   drawButton(12, 192, 216, 32, String("Theme: ") + theme().label, t.accent, C_BLACK);
-  drawButton(12, 232, 216, 32, "Clear WiFi", C_RED, C_WHITE);
+  drawButton(12, 232, 104, 32, remotePairingMode ? "Pairing..." : "Pair Pilot", remotePairingMode ? C_ORANGE : t.button, C_WHITE);
+  drawButton(124, 232, 104, 32, "Clear WiFi", C_RED, C_WHITE);
   drawButton(12, 276, 216, 34, "Back", t.highlight, C_BLACK);
 }
 
 void drawUi() {
   if (!displayReady || !uiDirty) {
+    return;
+  }
+  if (screenSaverActive) {
+    uiDirty = false;
+    uiFullRedraw = false;
+    if (lvglReady) {
+      if (!lvglUiBuilt || !lvSaverClock) {
+        lvglBuildScreenSaver();
+      }
+      lvglSyncScreenSaver();
+    } else {
+      drawScreenSaver();
+    }
     return;
   }
   if (lvglReady) {
@@ -1925,7 +2653,7 @@ void drawUi() {
 
 String stationsAsText() {
   String text;
-  text.reserve(1024);
+  text.reserve(6144);
   for (uint8_t i = 0; i < stationCount; i++) {
     text += stations[i].name;
     text += "|";
@@ -2245,6 +2973,13 @@ void applyConfigLine(String line) {
   } else if (key == "clock_24h") {
     clock24h = parseBoolValue(value, clock24h);
     prefs.putBool("clock24h", clock24h);
+  } else if (key == "remote_enabled") {
+    remoteEnabled = parseBoolValue(value, remoteEnabled);
+    prefs.putBool("remoteEn", remoteEnabled);
+  } else if (key == "remote_paired_mac") {
+    remotePairedMac = value;
+    remoteLoadPeerFromConfig();
+    prefs.putString("remoteMac", remotePairedMac);
   } else if (key == "touch_debounce_ms") {
     touchDebounceMs = static_cast<uint16_t>(boundedIntValue(value, 80, 800, touchDebounceMs));
     prefs.putUInt("touchDebMs", touchDebounceMs);
@@ -2350,6 +3085,9 @@ void loadRuntimeConfig() {
     timezoneSpec = DEFAULT_TIMEZONE;
   }
   clock24h = prefs.getBool("clock24h", true);
+  remoteEnabled = prefs.getBool("remoteEn", true);
+  remotePairedMac = prefs.getString("remoteMac", "");
+  remoteLoadPeerFromConfig();
   touchDebounceMs = static_cast<uint16_t>(constrain(prefs.getUInt("touchDebMs", DEFAULT_TOUCH_DEBOUNCE_MS), 80U, 800U));
   batteryEnabled = prefs.getBool("batEn", true);
   batteryMinMv = static_cast<uint16_t>(constrain(prefs.getUInt("batMinMv", DEFAULT_BATTERY_MIN_MV), 2800U, 3800U));
@@ -2399,7 +3137,7 @@ void saveRuntimeConfig(bool immediate) {
     configDirty = false;
     return;
   }
-  f.println("# LCDWiki Internet Radio config");
+  f.println("# ESP32 WiFi Radio config");
   f.println("# WiFi values are plain text on SD. Leave wifi_ssid empty to keep NVS/AP settings.");
   f.print("# theme:");
   for (uint8_t i = 0; i < THEME_COUNT; i++) {
@@ -2411,6 +3149,7 @@ void saveRuntimeConfig(bool immediate) {
   f.println("# startup_station: last or station index");
   f.println("# safe ranges: volume 0..21, led_brightness 0..100, retry 5..120 s, timeout 5..60 s");
   f.println("# battery_scale_permille default 2000 means ADC voltage times 2.000");
+  f.println("# remote_paired_mac is written by the ESP32-C6 pilot pairing flow");
   f.print("theme=");
   f.println(theme().id);
   f.print("volume=");
@@ -2445,6 +3184,10 @@ void saveRuntimeConfig(bool immediate) {
   f.println(timezoneSpec);
   f.print("clock_24h=");
   f.println(clock24h ? 1 : 0);
+  f.print("remote_enabled=");
+  f.println(remoteEnabled ? 1 : 0);
+  f.print("remote_paired_mac=");
+  f.println(remotePairedMac);
   f.print("touch_debounce_ms=");
   f.println(touchDebounceMs);
   f.print("battery_enabled=");
@@ -2698,12 +3441,16 @@ void initAudio() {
 
 void setupPortalRoutes() {
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/ota", HTTP_GET, handleOtaPage);
+  server.on("/ota", HTTP_POST, handleOtaDone, handleOtaUpload);
   server.on("/settings", HTTP_POST, handleSettingsSave);
   server.on("/wifi", HTTP_POST, handleWifiSave);
   server.on("/stations", HTTP_POST, handleStationsSave);
   server.on("/reboot", HTTP_POST, handleReboot);
   server.on("/clearwifi", HTTP_POST, handleClearWifi);
   server.on("/apoff", HTTP_POST, handleApOff);
+  server.on("/remote/pair", HTTP_POST, handleRemotePair);
+  server.on("/remote/forget", HTTP_POST, handleRemoteForget);
   server.onNotFound(handleNotFound);
 }
 
@@ -2807,15 +3554,15 @@ void clearWifi() {
 
 void handleRoot() {
   String html;
-  html.reserve(9000);
+  html.reserve(18000);
   html += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
-  html += F("<title>LCDWiki Radio</title><style>");
+  html += F("<title>ESP32 WiFi Radio</title><style>");
   html += F("body{font-family:system-ui,Segoe UI,sans-serif;margin:20px;background:#101418;color:#e8eef2}");
   html += F("input,textarea,button,select{box-sizing:border-box;width:100%;font:inherit;margin:6px 0;padding:10px;border-radius:6px;border:1px solid #53616b;background:#172027;color:#fff}");
   html += F("button{background:#1b7f72;border:0;font-weight:700}.danger{background:#b23b3b}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.muted{color:#aab6bd;font-size:.92rem}");
   html += F("textarea{height:190px;font-family:ui-monospace,Consolas,monospace}.card{max-width:760px;margin:auto}");
   html += F("</style></head><body><main class='card'>");
-  html += F("<h1>LCDWiki Radio</h1><p class='muted'>AP: ");
+  html += F("<h1>ESP32 WiFi Radio</h1><p class='muted'>Version 1.0<br>AP: ");
   html += htmlEscape(String(apName));
   html += F(" / pass: radio1234<br>Network: ");
   html += htmlEscape(networkText());
@@ -2835,6 +3582,8 @@ void handleRoot() {
   }
   html += F("<br>Clock: ");
   html += htmlEscape(clockStatusText());
+  html += F("<br>Pilot: ");
+  html += htmlEscape(remoteStatusText());
   html += F("</p><h2>WiFi</h2><form method='post' action='/wifi'>");
   html += F("<input name='ssid' placeholder='SSID' value='");
   html += htmlEscape(prefs.getString("ssid", ""));
@@ -2879,7 +3628,9 @@ void handleRoot() {
   html += htmlEscape(timezoneSpec);
   html += F("'><label><input name='clock24h' type='checkbox' style='width:auto' ");
   html += clock24h ? F("checked") : F("");
-  html += F("> 24-hour clock</label><h2>Battery</h2><label><input name='batenabled' type='checkbox' style='width:auto' ");
+  html += F("> 24-hour clock</label><h2>Pilot</h2><label><input name='remoteenabled' type='checkbox' style='width:auto' ");
+  html += remoteEnabled ? F("checked") : F("");
+  html += F("> ESP-NOW pilot enabled</label><h2>Battery</h2><label><input name='batenabled' type='checkbox' style='width:auto' ");
   html += batteryEnabled ? F("checked") : F("");
   html += F("> Enabled</label><div class='row'><label class='muted'>Min mV<input name='batmin' type='number' min='2800' max='3800' value='");
   html += String(batteryMinMv);
@@ -2908,6 +3659,54 @@ void handleRoot() {
   html += F("</select><label class='muted'>Error</label><select name='lederror'>");
   appendLedEffectOptions(html, ledErrorEffect);
   html += F("</select><button>Save settings</button></form>");
+  html += F("<h2>ESP32-C6 Pilot</h2><p class='muted'>Status: ");
+  html += htmlEscape(remoteStatusText());
+  html += F("<br>Radio MAC: ");
+  html += htmlEscape(WiFi.macAddress());
+  html += F("<br>Channel: ");
+  html += String(wifiPrimaryChannel());
+  html += F("</p><div class='row'><form method='post' action='/remote/pair'><button>Pair for 120 s</button></form>");
+  html += F("<form method='post' action='/remote/forget'><button class='danger'>Forget pilot</button></form></div>");
+  const uint32_t sketchSize = ESP.getSketchSize();
+  const uint32_t sketchSpace = sketchSize + ESP.getFreeSketchSpace();
+  const uint32_t heapSize = ESP.getHeapSize();
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t psramSize = ESP.getPsramSize();
+  html += F("<h2>Radio resources</h2><p class='muted'>CPU: ");
+  html += String(ESP.getCpuFreqMHz());
+  html += F(" MHz / loop load ");
+  html += String(cpuMainLoadPermille / 10);
+  html += F(".");
+  html += String(cpuMainLoadPermille % 10);
+  html += F("% / max loop ");
+  html += String(cpuLoopMaxUs / 1000.0f, 2);
+  html += F(" ms<br>Flash chip: ");
+  html += String(ESP.getFlashChipSize() / 1024UL);
+  html += F(" KB / sketch ");
+  html += String(sketchSize / 1024UL);
+  html += F(" KB");
+  if (sketchSpace) {
+    html += F(" / app ");
+    html += String((sketchSize * 100UL) / sketchSpace);
+    html += F("%");
+  }
+  html += F("<br>RAM heap: ");
+  html += String((heapSize - freeHeap) / 1024UL);
+  html += F(" KB used / ");
+  html += String(heapSize / 1024UL);
+  html += F(" KB total / min free ");
+  html += String(ESP.getMinFreeHeap() / 1024UL);
+  html += F(" KB");
+  if (psramSize) {
+    html += F("<br>PSRAM: ");
+    html += String((psramSize - ESP.getFreePsram()) / 1024UL);
+    html += F(" KB used / ");
+    html += String(psramSize / 1024UL);
+    html += F(" KB total");
+  }
+  html += F("</p>");
+  html += F("<h2>OTA</h2><p class='muted'>Upload a compiled firmware .bin. The radio screen shows progress.</p>");
+  html += F("<form method='get' action='/ota'><button>Open OTA update</button></form>");
   html += F("<h2>Stations</h2><form method='post' action='/stations'><textarea name='stations'>");
   html += htmlEscape(stationsAsText());
   html += F("</textarea><button>Save stations</button></form>");
@@ -2958,6 +3757,90 @@ void handleApOff() {
   server.send(200, "text/html", "<p>AP off.</p>");
   delay(100);
   stopPortal();
+}
+
+void handleRemotePair() {
+  remoteBeginPairing();
+  server.send(200, "text/html", "<p>Pairing window started for 120 seconds.</p><p><a href='/'>Back</a></p>");
+}
+
+void handleRemoteForget() {
+  remoteForgetPeer();
+  server.send(200, "text/html", "<p>Pilot pairing cleared.</p><p><a href='/'>Back</a></p>");
+}
+
+void handleOtaPage() {
+  String html;
+  html.reserve(1800);
+  html += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>ESP32 WiFi Radio OTA</title><style>body{font-family:system-ui,Segoe UI,sans-serif;margin:20px;background:#101418;color:#e8eef2}");
+  html += F("input,button{box-sizing:border-box;width:100%;font:inherit;margin:8px 0;padding:10px;border-radius:6px;border:1px solid #53616b;background:#172027;color:#fff}");
+  html += F("button{background:#1b7f72;border:0;font-weight:700}.card{max-width:620px;margin:auto}.muted{color:#aab6bd}</style></head><body><main class='card'>");
+  html += F("<h1>ESP32 WiFi Radio OTA</h1><p class='muted'>Upload firmware .bin. Do not power off during update.</p>");
+  html += F("<form method='post' action='/ota' enctype='multipart/form-data'><input type='file' name='firmware' accept='.bin' required><button>Upload firmware</button></form>");
+  html += F("<p><a href='/'>Back</a></p></main></body></html>");
+  server.send(200, "text/html", html);
+}
+
+void handleOtaDone() {
+  const bool ok = !Update.hasError();
+  String body = ok ? "<p>OTA complete. Rebooting...</p>" : "<p>OTA failed. Check UART logs.</p>";
+  body += "<p><a href='/'>Back</a></p>";
+  server.send(ok ? 200 : 500, "text/html", body);
+  if (ok) {
+    drawOtaProgress("Rebooting", 100, false);
+    delay(500);
+    ESP.restart();
+  } else {
+    otaInProgress = false;
+    drawOtaProgress("OTA failed", otaProgressPercent, true);
+  }
+}
+
+void handleOtaUpload() {
+  HTTPUpload &upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    otaInProgress = true;
+    otaProgressPercent = 0;
+    snprintf(otaStatusText, sizeof(otaStatusText), "Receiving %s", upload.filename.c_str());
+    stopAudio();
+    drawOtaProgress(otaStatusText, 0, false);
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      Update.printError(DEBUG_PORT);
+      drawOtaProgress("Cannot start OTA", 0, true);
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Update.printError(DEBUG_PORT);
+      drawOtaProgress("OTA write failed", otaProgressPercent, true);
+      return;
+    }
+    const size_t updateSize = Update.size();
+    if (updateSize > 0) {
+      uint8_t next = static_cast<uint8_t>((Update.progress() * 100ULL) / updateSize);
+      if (next > 99) {
+        next = 99;
+      }
+      if (next >= otaProgressPercent + 3) {
+        otaProgressPercent = next;
+        snprintf(otaStatusText, sizeof(otaStatusText), "Written %u KB", static_cast<unsigned>(Update.progress() / 1024U));
+        drawOtaProgress(otaStatusText, otaProgressPercent, false);
+      }
+    }
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (Update.end(true)) {
+      otaProgressPercent = 100;
+      drawOtaProgress("OTA complete", 100, false);
+      logf("OTA complete: %u bytes", static_cast<unsigned>(upload.totalSize));
+    } else {
+      Update.printError(DEBUG_PORT);
+      drawOtaProgress("OTA end failed", otaProgressPercent, true);
+    }
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    Update.abort();
+    otaInProgress = false;
+    drawOtaProgress("OTA aborted", otaProgressPercent, true);
+  }
 }
 
 void handleNotFound() {
@@ -3016,6 +3899,12 @@ void handleSettingsSave() {
   ntpConfigured = false;
   configureNtp(true);
   updateClock(true);
+  remoteEnabled = server.hasArg("remoteenabled");
+  if (remoteEnabled) {
+    initRemoteLink();
+  } else {
+    remotePairingMode = false;
+  }
   if (server.hasArg("touchdeb")) {
     touchDebounceMs = static_cast<uint16_t>(boundedIntValue(server.arg("touchdeb"), 80, 800, touchDebounceMs));
   }
@@ -3107,7 +3996,7 @@ bool downloadCoverToSd(const String &url, const String &path) {
   client.print(requestPath);
   client.print(F(" HTTP/1.1\r\nHost: "));
   client.print(hostPort);
-  client.print(F("\r\nUser-Agent: LCDWikiRadio/1.0\r\nConnection: close\r\n\r\n"));
+  client.print(F("\r\nUser-Agent: ESP32WiFiRadio/1.0\r\nConnection: close\r\n\r\n"));
 
   String statusLine = client.readStringUntil('\n');
   statusLine.trim();
@@ -3347,7 +4236,9 @@ void handleMenuTouch(uint16_t x, uint16_t y) {
     reconnectWifi();
   } else if (inRect(x, y, 12, 192, 216, 32)) {
     cycleTheme();
-  } else if (inRect(x, y, 12, 232, 216, 32)) {
+  } else if (inRect(x, y, 12, 232, 104, 32)) {
+    remoteBeginPairing();
+  } else if (inRect(x, y, 124, 232, 104, 32)) {
     clearWifi();
   } else if (inRect(x, y, 12, 276, 216, 34)) {
     uiScreen = UiScreen::Main;
@@ -3369,6 +4260,9 @@ void handleTouch() {
     return;
   }
   lastTouchMs = millis();
+  if (wakeScreenSaver()) {
+    return;
+  }
   logf("touch %u %u", x, y);
 
   if (uiScreen == UiScreen::Menu) {
@@ -3384,7 +4278,9 @@ void processSerialCommand(String cmd) {
   if (!cmd.length()) {
     return;
   }
-  if (cmd == "ap") {
+  if (cmd == "help" || cmd == "menu" || cmd == "?") {
+    DEBUG_PORT.println("Commands: help, ap, apoff, reconnect, play, stop, next, prev, reload, saveconfig, theme [name], clearwifi, pairremote, unpairremote, remote, vol N, station N, list, status, unmute, toneon, toneoff, i2slog on/off, codecdebug on/off, codecsummary, codec16, codec32, amp0, amp1, codecdump, reboot");
+  } else if (cmd == "ap") {
     startPortal();
   } else if (cmd == "apoff") {
     stopPortal();
@@ -3398,6 +4294,11 @@ void processSerialCommand(String cmd) {
     stopAudio();
   } else if (cmd == "reload") {
     reloadSdStations();
+  } else if (cmd == "reconnect") {
+    reconnectWifi();
+  } else if (cmd == "saveconfig") {
+    saveRuntimeConfig(true);
+    DEBUG_PORT.println("Config saved");
   } else if (cmd == "theme") {
     cycleTheme();
   } else if (cmd.startsWith("theme ")) {
@@ -3417,6 +4318,19 @@ void processSerialCommand(String cmd) {
     }
   } else if (cmd == "clearwifi") {
     clearWifi();
+  } else if (cmd == "pairremote" || cmd == "pair" || cmd == "remote pair") {
+    remoteBeginPairing();
+  } else if (cmd == "unpairremote" || cmd == "remote forget") {
+    remoteForgetPeer();
+  } else if (cmd == "remote") {
+    DEBUG_PORT.printf("Pilot: %s enabled=%d ready=%d paired=%d peer=%s channel=%u radioMac=%s\n",
+                      remoteStatusText().c_str(),
+                      remoteEnabled ? 1 : 0,
+                      remoteReady ? 1 : 0,
+                      remotePeerValid ? 1 : 0,
+                      remotePairedMac.length() ? remotePairedMac.c_str() : "<none>",
+                      wifiPrimaryChannel(),
+                      WiFi.macAddress().c_str());
   } else if (cmd.startsWith("vol ")) {
     setVolumeLevel(cmd.substring(4).toInt());
   } else if (cmd.startsWith("station ")) {
@@ -3442,17 +4356,21 @@ void processSerialCommand(String cmd) {
     setStatus("I2S test tone OFF");
   } else if (cmd == "i2slog on") {
     i2sTrace = true;
+    i2sTraceUntilMs = millis() + TRACE_AUTO_OFF_MS;
     lastI2sTraceMs = millis();
     lastI2sTraceFrames = g_i2sFrameCount;
-    DEBUG_PORT.println("I2S trace ON");
+    DEBUG_PORT.println("I2S trace ON for 60s");
   } else if (cmd == "i2slog off") {
     i2sTrace = false;
+    i2sTraceUntilMs = 0;
     DEBUG_PORT.println("I2S trace OFF");
   } else if (cmd == "codecdebug on") {
     codecTrace = true;
-    DEBUG_PORT.println("ES8311 I2C trace ON");
+    codecTraceUntilMs = millis() + TRACE_AUTO_OFF_MS;
+    DEBUG_PORT.println("ES8311 I2C trace ON for 60s");
   } else if (cmd == "codecdebug off") {
     codecTrace = false;
+    codecTraceUntilMs = 0;
     DEBUG_PORT.println("ES8311 I2C trace OFF");
   } else if (cmd == "codecsummary") {
     printEs8311Summary();
@@ -3473,7 +4391,7 @@ void processSerialCommand(String cmd) {
     delay(100);
     ESP.restart();
   } else {
-    DEBUG_PORT.println("Commands: ap, apoff, play, stop, next, prev, reload, theme [name], clearwifi, vol N, station N, list, status, unmute, toneon, toneoff, i2slog on/off, codecdebug on/off, codecsummary, codec16, codec32, amp0, amp1, codecdump, reboot");
+    DEBUG_PORT.println("Unknown command. Type help.");
   }
 }
 
@@ -3561,6 +4479,23 @@ void printStatus() {
                     ntpServer.c_str(),
                     timezoneSpec.c_str(),
                     clock24h ? 1 : 0);
+  DEBUG_PORT.printf("Pilot: %s enabled=%d ready=%d paired=%d peer=%s channel=%u radioMac=%s lastSeenMs=%lu\n",
+                    remoteStatusText().c_str(),
+                    remoteEnabled ? 1 : 0,
+                    remoteReady ? 1 : 0,
+                    remotePeerValid ? 1 : 0,
+                    remotePairedMac.length() ? remotePairedMac.c_str() : "<none>",
+                    wifiPrimaryChannel(),
+                    WiFi.macAddress().c_str(),
+                    remoteLastSeenMs);
+  DEBUG_PORT.printf("Resources: cpuLoad=%u.%u%% maxLoop=%.2fms heap=%lu/%lu sketch=%lu freeSketch=%lu\n",
+                    cpuMainLoadPermille / 10,
+                    cpuMainLoadPermille % 10,
+                    cpuLoopMaxUs / 1000.0f,
+                    ESP.getFreeHeap(),
+                    ESP.getHeapSize(),
+                    ESP.getSketchSize(),
+                    ESP.getFreeSketchSpace());
   DEBUG_PORT.printf("Audio: pinout=%d playing=%d running=%d codec=%s sample=%lu bits=%u channels=%u bitrate=%lu volume=%u VU=%u\n",
                     audioPinoutReady,
                     playing,
@@ -3672,24 +4607,38 @@ void setupRadio() {
     startPortal();
   }
 
+  lvglShowBootStep("Remote pilot link", 94);
+  initRemoteLink();
+
   if (autoPlay && WiFi.status() == WL_CONNECTED && stationCount > 0) {
     lvglShowBootStep("Starting stream", 96);
     startStation(currentStation);
   }
 
   lvglShowBootStep("Ready", 100);
+  registerUiActivity();
   invalidateUi(true);
   drawUi();
 }
 
 void loopRadio() {
+  const uint32_t loopStartUs = micros();
   audio.loop();
 
   serviceNetwork();
+  if (otaInProgress) {
+    handleSerial();
+    updateLed();
+    serviceLvgl();
+    delay(1);
+    return;
+  }
+  serviceRemoteLink();
   serviceConfigSave();
   updateSystemStatus(false);
   updateClock(false);
   handleSerial();
+  serviceTraceTimeouts();
   traceI2sIfNeeded();
   handleTouch();
   updateLed();
@@ -3714,7 +4663,9 @@ void loopRadio() {
     startStation(currentStation);
   }
 
+  serviceScreenSaver();
   drawUi();
+  updateCpuStats(loopStartUs);
   serviceLvgl();
   delay(1);
 }

@@ -1,15 +1,21 @@
 # GitHub Release Checklist
 
-Use this before creating the public repository.
+Use this before tagging a public release.
 
-## Before The First Push
+## Version 1.0 Scope
 
-- Review `README.md`, project READMEs, and docs for stale notes.
+- `ESP32WiFiRadio/` is the official radio firmware.
+- `ESP32WiFiRadioPilot/` is the official ESP32-C6 remote.
+- `ESP32BinLoader/` is the factory/rescue app loader.
+- The old `InternetRadio/` classic project is intentionally removed.
+
+## Before Push
+
+- Review `README.md`, project READMEs, and docs for stale project names.
 - Confirm `LICENSE` and `LICENSES.md` are present.
 - Confirm `sd_card/radio.cfg` has blank `wifi_ssid=` and `wifi_password=`.
-- Do not commit private SD card dumps, Wi-Fi credentials, or local logs.
-- Keep `AudioProbe/` and `AudioProbeIdf/` only if diagnostic history is useful
-  for the public repo.
+- Do not commit private SD card dumps, Wi-Fi credentials, local logs, or built
+  `.bin` files.
 
 ## Build Verification
 
@@ -17,24 +23,27 @@ Run:
 
 ```powershell
 $cli = "$env:LOCALAPPDATA\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe"
-$fqbn = "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB,USBMode=hwcdc,CDCOnBoot=default"
-& $cli compile --fqbn $fqbn InternetRadio
-& $cli compile --fqbn $fqbn esp32radioLVGL
+$fqbnS3 = "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB,USBMode=hwcdc,CDCOnBoot=default"
+$fqbnC6 = "esp32:esp32:esp32c6:FlashSize=8M,PartitionScheme=default_8MB"
+$fqbnLoader = "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,USBMode=hwcdc,CDCOnBoot=default"
+& $cli compile --fqbn $fqbnS3 ESP32WiFiRadio
+& $cli compile --fqbn $fqbnC6 ESP32WiFiRadioPilot
+& $cli compile --fqbn $fqbnLoader ESP32BinLoader
 ```
 
 Optional hardware smoke test:
 
-- Upload `InternetRadio` to `COM6`, check `COM7 status`.
-- Upload `esp32radioLVGL` to `COM6`, check `COM7 status`.
-- Confirm SD loads, Wi-Fi connects, and `Audio: playing=1 running=1`.
+- Upload `ESP32WiFiRadio` to `COM6`, check `COM7 status`.
+- Upload `ESP32WiFiRadioPilot` to `COM5`, pair with the radio.
+- Upload `ESP32BinLoader` to `COM6`, check app list and web SD browser.
 
-## Suggested Initial Commit
+## Release
 
 ```powershell
-git init
-git add .
 git status
-git commit -m "Initial LCDWiki ESP32-S3 internet radio projects"
+git add .
+git commit -m "Release ESP32 WiFi Radio 1.0"
+git tag -a v1.0 -m "ESP32 WiFi Radio 1.0"
+git push origin main
+git push origin v1.0
 ```
-
-Then create a GitHub repository and push according to the URL GitHub gives you.
