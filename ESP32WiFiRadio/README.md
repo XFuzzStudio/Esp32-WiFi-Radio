@@ -5,8 +5,9 @@ Official LVGL 9 internet radio firmware for the LCDWiki ESP32-S3 ES3C28P board.
 ## What It Does
 
 - Plays internet radio streams over Wi-Fi through the ES8311 codec.
-- Loads `/radio.cfg` and `/stations.csv` from microSD.
-- Creates default SD files when possible, and uses AP setup when Wi-Fi is blank.
+- Loads `/apps_data/ESP32WiFiRadio/radio.cfg` and
+  `/apps_data/ESP32WiFiRadio/stations.csv` from microSD.
+- Requires the radio SD data folder and uses AP setup when Wi-Fi is blank.
 - Shows station, stream title, clock, SD/Wi-Fi/battery/pilot state, and controls.
 - Supports up to 50 stations.
 - Pairs with `ESP32WiFiRadioPilot/` over ESP-NOW.
@@ -15,14 +16,15 @@ Official LVGL 9 internet radio firmware for the LCDWiki ESP32-S3 ES3C28P board.
 
 ## SD Files
 
-`/stations.csv`:
+`/apps_data/ESP32WiFiRadio/stations.csv`:
 
 ```text
 Station name|stream_url|optional_cover_bmp_url
 ```
 
-`/radio.cfg` stores runtime settings. The sample in `../sd_card/radio.cfg` keeps
-Wi-Fi blank for safe publication.
+`/apps_data/ESP32WiFiRadio/radio.cfg` stores runtime settings. The sample in
+`../sd_card/apps_data/ESP32WiFiRadio/radio.cfg` keeps Wi-Fi blank for safe
+publication.
 
 Important safe ranges are enforced by firmware:
 
@@ -61,7 +63,7 @@ Required libraries:
 Open the radio web UI and go to `/ota`. Upload `ESP32WiFiRadio.ino.bin`; the
 radio display shows the OTA progress bar.
 
-## Factory Loader App
+## ESP32 Bin Loader App
 
 For `ESP32BinLoader`, copy the compiled app binary to the loader SD card:
 
@@ -74,3 +76,7 @@ The loader manifest uses:
 ```text
 ESP32 WiFi Radio|radio_lvgl.bin|Official LVGL radio firmware
 ```
+
+When the radio is launched from `ESP32BinLoader`, it sets the next boot target
+back to the loader during startup. That means a normal reset returns to
+`ESP32 Bin Loader` instead of keeping the radio as the default boot app.

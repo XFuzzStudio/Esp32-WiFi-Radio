@@ -4,7 +4,9 @@ Factory/rescue loader for the LCDWiki ESP32-S3 ES3C28P board.
 
 The ESP32 cannot execute firmware directly from SD. This loader keeps a small
 factory app in flash, reads `.bin` files from `/apps` on microSD, installs the
-selected image through the ESP32 OTA API, and reboots into it.
+selected image through the ESP32 OTA API, and reboots into it. Apps launched by
+the loader should set the next boot target back to the factory partition early
+in `setup()`, so a normal reset returns to `ESP32 Bin Loader`.
 
 ## Features
 
@@ -22,6 +24,8 @@ selected image through the ESP32 OTA API, and reboots into it.
 /apps/
   manifest.txt
   radio_lvgl.bin
+  esp_wifi_scanner.bin
+  esp_gif_player.bin
 ```
 
 Manifest format:
@@ -29,6 +33,8 @@ Manifest format:
 ```text
 # label|firmware_file|notes
 ESP32 WiFi Radio|radio_lvgl.bin|Official LVGL radio firmware
+ESP-WiFi-Scanner|esp_wifi_scanner.bin|LVGL Wi-Fi scanner, host finder, and port scanner
+ESP-GiF-Player|esp_gif_player.bin|LVGL GIF player with touch and web upload
 ```
 
 ## Build And Upload
@@ -63,6 +69,23 @@ ap
 reload
 list
 ```
+
+## Reset Behavior
+
+`ESP32WiFiRadio` already calls the shared helper in
+`shared/esp32_bin_loader_return.h`. For other apps, include the same helper and
+call this near the start of `setup()`:
+
+```cpp
+#include "../shared/esp32_bin_loader_return.h"
+
+void setup() {
+  esp32BinLoaderReturnToFactoryOnNextBoot();
+}
+```
+
+Without that call, the ESP32 OTA boot data keeps booting the last launched app
+until another firmware changes the boot partition.
 
 ## Preparing A Radio App Bin
 

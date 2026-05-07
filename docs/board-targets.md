@@ -15,8 +15,9 @@ Used by `ESP32WiFiRadio/` and `ESP32BinLoader/`.
 - Upload port used during development: `COM6`
 - Debug UART used during development: `COM7`, `115200`
 
-Important pins are documented in
-`hardware_specs/lcdwiki-esp32-s3-es3c28p/pinout.md`.
+The compile-time pin definitions live in `shared/lcdwiki_es3c28p/`. The longer
+vendor research notes were moved out of the repo archive to keep the public
+source tree focused on buildable firmware.
 
 Build target:
 

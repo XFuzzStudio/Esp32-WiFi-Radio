@@ -8,4 +8,7 @@
 - Added ESP-NOW pairing, station/volume/play controls, battery and Wi-Fi status.
 - Added OTA with on-screen progress for the radio and pilot.
 - Added radio and pilot screensavers for lower battery drain.
-- Removed the old `InternetRadio/` classic project from the public repo.
+- Removed superseded diagnostics and UI experiments from the public repo.
+- Added `ESP-WiFi-Scanner` and `ESP-GiF-Player` app projects for the bin loader.
+- Moved radio SD data to `/apps_data/ESP32WiFiRadio/`.
+- Added per-project versioning policy starting from `1.0`.

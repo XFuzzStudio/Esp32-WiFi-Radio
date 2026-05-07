@@ -10,6 +10,7 @@ desktop.ini
 # Arduino / embedded build outputs
 build/
 build-*/
+build-output/
 .arduino/
 *.bin
 *.elf
@@ -30,6 +31,11 @@ build-*/
 *.tmp
 *.bak
 *.orig
+AI_HANDOFF*.md
+AI_REMOTE_BUILD.md
+firmware_export/
+firmware_export.zip
+sd_card_export.zip
 
 # Do not commit private SD dumps with credentials.
 # Keep the sanitized sample files in sd_card/.

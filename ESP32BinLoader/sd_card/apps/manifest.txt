@@ -1,2 +1,4 @@
 # label|firmware_file|notes
 ESP32 WiFi Radio|radio_lvgl.bin|Official LVGL radio firmware
+ESP-WiFi-Scanner|esp_wifi_scanner.bin|LVGL Wi-Fi scanner, host finder, and port scanner
+ESP-GiF-Player|esp_gif_player.bin|LVGL GIF player with touch and web upload

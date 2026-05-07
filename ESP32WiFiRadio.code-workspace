@@ -1,0 +1,21 @@
+{
+  "folders": [
+    {
+      "name": "ESP32 WiFi Radio",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "files.associations": {
+      "*.ino": "cpp",
+      "*.h": "cpp"
+    },
+    "terminal.integrated.defaultProfile.windows": "PowerShell"
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-vscode.cpptools",
+      "vsciot-vscode.vscode-arduino"
+    ]
+  }
+}

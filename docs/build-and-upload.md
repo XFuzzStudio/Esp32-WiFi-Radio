@@ -9,6 +9,13 @@ $fqbnC6 = "esp32:esp32:esp32c6:FlashSize=8M,PartitionScheme=default_8MB"
 $fqbnLoader = "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,USBMode=hwcdc,CDCOnBoot=default"
 ```
 
+To build every project with all available CPU threads and copy app `.bin` files
+for the loader:
+
+```powershell
+.\scripts\build-all.ps1
+```
+
 ## ESP32 WiFi Radio
 
 ```powershell
@@ -16,6 +23,24 @@ $fqbnLoader = "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custo
 & $cli upload -p COM6 --fqbn $fqbnS3 ESP32WiFiRadio
 & $cli monitor -p COM7 -c baudrate=115200
 ```
+
+## ESP-WiFi-Scanner
+
+```powershell
+& $cli compile --fqbn $fqbnS3 ESP-WiFi-Scanner
+```
+
+Copy `ESP-WiFi-Scanner.ino.bin` to `/apps/esp_wifi_scanner.bin` on the loader
+SD card.
+
+## ESP-GiF-Player
+
+```powershell
+& $cli compile --fqbn $fqbnS3 ESP-GiF-Player
+```
+
+Copy `ESP-GiF-Player.ino.bin` to `/apps/esp_gif_player.bin` on the loader SD
+card.
 
 ## ESP32 WiFi Radio Pilot
 
@@ -49,6 +74,17 @@ $fqbnLoader = "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custo
 - `GFX Library for Arduino`
 - `Adafruit NeoPixel`
 - `ESP32-audioI2S-master`
+
+`ESP-WiFi-Scanner`:
+
+- `lvgl` 9.x
+- `GFX Library for Arduino`
+
+`ESP-GiF-Player`:
+
+- `lvgl` 9.x
+- `GFX Library for Arduino`
+- `AnimatedGIF`
 
 `ESP32WiFiRadioPilot`:
 

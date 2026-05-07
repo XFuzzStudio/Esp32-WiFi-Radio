@@ -5,15 +5,19 @@ Use this before tagging a public release.
 ## Version 1.0 Scope
 
 - `ESP32WiFiRadio/` is the official radio firmware.
+- `ESP-WiFi-Scanner/` is the official scanner utility app.
+- `ESP-GiF-Player/` is the official GIF player app.
 - `ESP32WiFiRadioPilot/` is the official ESP32-C6 remote.
 - `ESP32BinLoader/` is the factory/rescue app loader.
-- The old `InternetRadio/` classic project is intentionally removed.
+- Legacy diagnostics and superseded UI experiments are intentionally kept out
+  of the release tree.
 
 ## Before Push
 
 - Review `README.md`, project READMEs, and docs for stale project names.
 - Confirm `LICENSE` and `LICENSES.md` are present.
-- Confirm `sd_card/radio.cfg` has blank `wifi_ssid=` and `wifi_password=`.
+- Confirm `sd_card/apps_data/ESP32WiFiRadio/radio.cfg` has blank `wifi_ssid=`
+  and `wifi_password=`.
 - Do not commit private SD card dumps, Wi-Fi credentials, local logs, or built
   `.bin` files.
 

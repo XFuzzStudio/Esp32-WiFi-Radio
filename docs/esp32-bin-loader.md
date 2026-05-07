@@ -11,6 +11,8 @@ firmwares from SD without reflashing from a PC each time.
 3. The user selects an app through touch, web UI, or UART.
 4. The loader writes the selected app `.bin` through the ESP32 OTA API.
 5. The board reboots into the selected firmware.
+6. The selected firmware should set the next boot target back to factory, so a
+   normal reset returns to `ESP32 Bin Loader`.
 
 The selected app still runs from internal flash. SD is only storage for firmware
 images.
@@ -21,6 +23,12 @@ images.
 /apps/
   manifest.txt
   radio_lvgl.bin
+  esp_wifi_scanner.bin
+  esp_gif_player.bin
+/apps_data/
+  ESP32WiFiRadio/
+  ESP-WiFi-Scanner/
+  ESP-GiF-Player/
 ```
 
 Manifest:
@@ -80,3 +88,19 @@ $fqbnLoader = "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custo
 
 Compile `ESP32WiFiRadio` and copy `ESP32WiFiRadio.ino.bin` to the loader SD card
 as `/apps/radio_lvgl.bin`.
+
+`scripts/build-all.ps1` also builds `ESP-WiFi-Scanner` and `ESP-GiF-Player`,
+then copies their app binaries to `/apps/esp_wifi_scanner.bin` and
+`/apps/esp_gif_player.bin`.
+
+`ESP32WiFiRadio` includes `shared/esp32_bin_loader_return.h` and automatically
+sets the next reset target back to the loader. Other apps should do the same near
+the start of `setup()`:
+
+```cpp
+#include "../shared/esp32_bin_loader_return.h"
+
+void setup() {
+  esp32BinLoaderReturnToFactoryOnNextBoot();
+}
+```

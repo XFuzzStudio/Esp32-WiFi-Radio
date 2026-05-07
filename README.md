@@ -3,17 +3,18 @@
 Version 1.0 firmware set for the LCDWiki 2.8 inch ESP32-S3 ES3C28P board and a
 Waveshare ESP32-C6 touch remote.
 
-The official radio firmware is now the LVGL build in `ESP32WiFiRadio/`. The old
-Arduino_GFX classic radio was removed from the public project.
+The official radio firmware is the LVGL build in `ESP32WiFiRadio/`. Extra
+loader apps use the same LCDWiki ESP32-S3 target and run from `ESP32BinLoader`.
 
 ## Projects
 
 - `ESP32WiFiRadio/` - official LVGL internet radio for the LCDWiki ESP32-S3.
+- `ESP-WiFi-Scanner/` - LVGL Wi-Fi scanner, host finder, and port scanner.
+- `ESP-GiF-Player/` - LVGL GIF player with touch and web upload.
 - `ESP32WiFiRadioPilot/` - ESP32-C6 touch pilot using ESP-NOW.
 - `ESP32BinLoader/` - factory/rescue loader that installs `.bin` apps from SD.
 - `shared/` - ESP-NOW protocol shared by the radio and pilot.
-- `sd_card/` - sanitized starter SD card files for the radio.
-- `hardware_specs/` - board pinout and bring-up notes.
+- `sd_card/` - sanitized starter SD card files for all SD-backed apps.
 
 ## Hardware
 
@@ -29,16 +30,23 @@ Arduino_GFX classic radio was removed from the public project.
 - ES8311 codec and I2S audio streaming through `ESP32-audioI2S-master`.
 - SD-first station/config storage with setup AP when Wi-Fi is missing.
 - Web UI for Wi-Fi, stations, config, diagnostics, ESP-NOW pairing, and OTA.
-- Up to 50 stations in `/stations.csv`.
+- Up to 50 stations in `/apps_data/ESP32WiFiRadio/stations.csv`.
 - NTP clock, battery status, Wi-Fi bars, pilot battery/link state.
 - Screensaver with large clock to reduce display updates on battery.
 - Addressable RGB LED network/playback/error effects.
 
+## Extra Apps
+
+- `ESP-WiFi-Scanner` scans Wi-Fi networks, connects through an on-screen
+  keyboard, scans live hosts and popular/custom ports, and can write scan logs
+  only when logging is enabled from touch UI or web GUI.
+- `ESP-GiF-Player` lists and plays GIF files from SD with touch controls and web
+  upload/selection.
+
 ## Quick Start
 
 1. Install Arduino IDE 2.x, ESP32 Arduino core, and required libraries.
-2. Copy `sd_card/radio.cfg` and `sd_card/stations.csv` to the root of a microSD
-   card.
+2. Copy the contents of `sd_card/` to a microSD card.
 3. Fill `wifi_ssid=` and `wifi_password=` on the SD card, or leave them blank
    and use the setup AP at `http://192.168.4.1`.
 4. Compile/upload the radio:
@@ -62,6 +70,7 @@ $fqbnC6 = "esp32:esp32:esp32c6:FlashSize=8M,PartitionScheme=default_8MB"
 
 - [Build and upload](docs/build-and-upload.md)
 - [SD card files](docs/sd-card.md)
+- [Versioning](docs/versioning.md)
 - [ESP32 WiFi Radio Pilot](docs/radio-pilot.md)
 - [ESP32 Bin Loader](docs/esp32-bin-loader.md)
 - [UART commands](docs/uart-commands.md)

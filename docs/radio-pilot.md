@@ -7,8 +7,9 @@ Waveshare ESP32-C6-Touch-LCD-1.47 board.
 
 - Transport: ESP-NOW.
 - Pairing: the radio broadcasts a pairing advert for 120 seconds.
-- Storage: the radio writes the paired pilot MAC to `/radio.cfg` as
-  `remote_paired_mac=`, and the pilot stores the radio MAC/channel in NVS.
+- Storage: the radio writes the paired pilot MAC to
+  `/apps_data/ESP32WiFiRadio/radio.cfg` as `remote_paired_mac=`, and the pilot
+  stores the radio MAC/channel in NVS.
 - Runtime status: the radio sends station, title/status, clock, radio battery,
   Wi-Fi bars/RSSI, volume, SD/AP/play flags, and channel.
 - Runtime commands: the pilot sends prev, next, volume down, volume up, play,

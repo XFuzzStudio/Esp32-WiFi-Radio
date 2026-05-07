@@ -12,6 +12,8 @@
 // ESP32 Bin Loader for LCDWiki ESP32-S3 ES3C28P.
 // Reads firmware images from SD, installs the selected .bin with OTA APIs,
 // and provides a rescue web UI for Wi-Fi setup plus SD card file management.
+// Launched apps should set the next boot target back to factory so resets
+// always return to this loader.
 
 static constexpr int DEBUG_UART_RX = 44;
 static constexpr int DEBUG_UART_TX = 43;

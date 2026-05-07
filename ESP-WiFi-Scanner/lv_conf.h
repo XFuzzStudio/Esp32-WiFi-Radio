@@ -1,0 +1,20 @@
+#ifndef LV_CONF_H
+#define LV_CONF_H
+
+#define LV_COLOR_DEPTH 16
+#define LV_USE_OS LV_OS_NONE
+#define LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB
+#define LV_USE_STDLIB_STRING LV_STDLIB_CLIB
+#define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
+#define LV_MEM_SIZE (96U * 1024U)
+#define LV_USE_LOG 0
+#define LV_USE_LABEL 1
+#define LV_USE_BUTTON 1
+#define LV_USE_BAR 1
+#define LV_USE_TEXTAREA 1
+#define LV_USE_KEYBOARD 1
+#define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_18 1
+#define LV_FONT_DEFAULT &lv_font_montserrat_14
+
+#endif

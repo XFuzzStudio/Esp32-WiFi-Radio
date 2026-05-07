@@ -1,15 +1,31 @@
 # SD Card Files
 
-## ESP32 WiFi Radio
+All apps that use local data expect their own folder under `/apps_data`.
 
-Copy the sample files from `sd_card/` to the root of the radio microSD card:
+Copy the sample files from `sd_card/` to the root of the microSD card:
 
 ```text
-/radio.cfg
-/stations.csv
-/covers/       optional, created by firmware when possible
-/logo.bmp      optional boot logo
+/apps/
+  manifest.txt
+  radio_lvgl.bin
+  esp_wifi_scanner.bin
+  esp_gif_player.bin
+/apps_data/
+  ESP32WiFiRadio/
+    radio.cfg
+    stations.csv
+    covers/
+  ESP-WiFi-Scanner/
+    logs/
+  ESP-GiF-Player/
+    gifs/
+    uploads/
 ```
+
+If an app cannot mount SD or cannot find its required data folder/files, it
+shows an error instead of silently using root-card files.
+
+## ESP32 WiFi Radio
 
 `radio.cfg` stores runtime settings. The sample file keeps Wi-Fi blank:
 
@@ -22,7 +38,8 @@ Fill those values on your own SD card, or leave them blank and use the setup AP
 at `http://192.168.4.1`.
 
 For the ESP32-C6 pilot link, the radio writes `remote_paired_mac=` into
-`/radio.cfg` during pairing. Leave that value empty in a fresh SD image.
+`/apps_data/ESP32WiFiRadio/radio.cfg` during pairing. Leave that value empty in
+a fresh SD image.
 
 ## stations.csv
 
@@ -39,12 +56,14 @@ The radio loads up to 50 station rows.
 
 ## ESP32 Bin Loader
 
-The loader SD card uses a separate `/apps` folder:
+The loader SD card uses `/apps` for firmware images:
 
 ```text
 /apps/
   manifest.txt
   radio_lvgl.bin
+  esp_wifi_scanner.bin
+  esp_gif_player.bin
 ```
 
 Manifest rows use:

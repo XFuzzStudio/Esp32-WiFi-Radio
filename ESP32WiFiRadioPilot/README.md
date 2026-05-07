@@ -25,7 +25,7 @@ Touch remote for `ESP32WiFiRadio/` on the Waveshare ESP32-C6-Touch-LCD-1.47.
 2. Keep the pilot powered on. When it hears the ESP-NOW pairing advert, it stores
    the radio MAC and channel in NVS.
 3. To clear radio-side pairing use web UI, UART `unpairremote`, or edit
-   `/radio.cfg` and clear `remote_paired_mac=`.
+   `/apps_data/ESP32WiFiRadio/radio.cfg` and clear `remote_paired_mac=`.
 
 ## Build And Upload
 

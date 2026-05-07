@@ -16,9 +16,10 @@
 #include <stdarg.h>
 #include <time.h>
 
-#include "../hardware_specs/lcdwiki-esp32-s3-es3c28p/arduino_gfx_display.h"
-#include "../hardware_specs/lcdwiki-esp32-s3-es3c28p/lcdwiki_es3c28p_config.h"
-#include "../hardware_specs/lcdwiki-esp32-s3-es3c28p/touch_ft6336.h"
+#include "../shared/lcdwiki_es3c28p/arduino_gfx_display.h"
+#include "../shared/lcdwiki_es3c28p/lcdwiki_es3c28p_config.h"
+#include "../shared/lcdwiki_es3c28p/touch_ft6336.h"
+#include "../shared/esp32_bin_loader_return.h"
 #include "../shared/radio_remote_protocol.h"
 
 #define DEBUG_PORT Serial0
@@ -103,9 +104,10 @@ static constexpr uint16_t LVGL_SCREEN_H = LCDWIKI_ES3C28P_SCREEN_HEIGHT;
 static constexpr byte DNS_PORT = 53;
 static constexpr int8_t DEBUG_UART_RX = 44;
 static constexpr int8_t DEBUG_UART_TX = 43;
-static constexpr char STATIONS_FILE[] = "/stations.csv";
-static constexpr char CONFIG_FILE[] = "/radio.cfg";
-static constexpr char COVERS_DIR[] = "/covers";
+static constexpr char APP_DATA_DIR[] = "/apps_data/ESP32WiFiRadio";
+static constexpr char STATIONS_FILE[] = "/apps_data/ESP32WiFiRadio/stations.csv";
+static constexpr char CONFIG_FILE[] = "/apps_data/ESP32WiFiRadio/radio.cfg";
+static constexpr char COVERS_DIR[] = "/apps_data/ESP32WiFiRadio/covers";
 
 static const IPAddress AP_IP(192, 168, 4, 1);
 static const IPAddress AP_NETMASK(255, 255, 255, 0);
@@ -220,6 +222,7 @@ LedMode ledMode = LedMode::Boot;
 bool displayReady = false;
 bool touchReady = false;
 bool sdReady = false;
+bool sdDataReady = false;
 bool apActive = false;
 bool portalStarted = false;
 bool playing = false;
@@ -517,6 +520,7 @@ void setLedMode(LedMode mode);
 void updateLed();
 void initPixel();
 void initDebug();
+void preferBinLoaderOnNextReset();
 void initApName();
 void drawBoot(const char *line);
 void drawOtaProgress(const char *line, uint8_t percent, bool error = false);
@@ -2215,6 +2219,18 @@ void initDebug() {
   logf("Chip: %s, PSRAM: %u bytes", ESP.getChipModel(), ESP.getPsramSize());
 }
 
+void preferBinLoaderOnNextReset() {
+  const esp_err_t err = esp32BinLoaderReturnToFactoryOnNextBoot();
+  if (err == ESP_OK) {
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running && running->subtype != ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+      logf("Next reset target: ESP32 Bin Loader factory partition");
+    }
+  } else if (err != ESP_ERR_NOT_FOUND) {
+    logf("Cannot set factory loader as next boot target: %d", static_cast<int>(err));
+  }
+}
+
 void initApName() {
   const uint32_t chip = static_cast<uint32_t>(ESP.getEfuseMac());
   snprintf(apName, sizeof(apName), "ESP32Radio-%04X", chip & 0xFFFF);
@@ -2680,6 +2696,7 @@ String htmlEscape(String value) {
 
 void initSd() {
   sdReady = false;
+  sdDataReady = false;
   SD_MMC.end();
 
   SD_MMC.setPins(
@@ -2706,7 +2723,8 @@ void initSd() {
     logf("SD mounted: %llu MB", SD_MMC.cardSize() / (1024ULL * 1024ULL));
     ensureSdFiles();
   } else {
-    logf("SD mount failed, using fallback/NVS stations");
+    logf("SD mount failed; %s is required", APP_DATA_DIR);
+    setStatus("SD card missing");
   }
   uiDirty = true;
 }
@@ -2740,10 +2758,28 @@ void ensureDefaultConfigFile() {
 }
 
 void ensureSdFiles() {
-  ensureDefaultStationFile();
-  ensureDefaultConfigFile();
+  sdDataReady = false;
+  if (!sdReady) {
+    return;
+  }
+  if (!SD_MMC.exists("/apps_data")) {
+    SD_MMC.mkdir("/apps_data");
+  }
+  if (!SD_MMC.exists(APP_DATA_DIR)) {
+    SD_MMC.mkdir(APP_DATA_DIR);
+  }
   if (!SD_MMC.exists(COVERS_DIR)) {
     SD_MMC.mkdir(COVERS_DIR);
+  }
+  const bool hasStations = SD_MMC.exists(STATIONS_FILE);
+  const bool hasConfig = SD_MMC.exists(CONFIG_FILE);
+  sdDataReady = hasStations && hasConfig;
+  if (!sdDataReady) {
+    logf("Missing required radio SD files: %s%s%s",
+         hasConfig ? "" : CONFIG_FILE,
+         (!hasConfig && !hasStations) ? " and " : "",
+         hasStations ? "" : STATIONS_FILE);
+    setStatus("Missing SD files in %s", APP_DATA_DIR);
   }
 }
 
@@ -2840,21 +2876,8 @@ void loadStations() {
   }
 
   if (!loaded) {
-    String stored = prefs.getString("stationsCsv", "");
-    if (stored.length()) {
-      loadStationsFromText(stored);
-      loaded = stationCount > 0;
-      logf("Loaded %u stations from NVS", stationCount);
-    }
-  }
-
-  if (!loaded) {
-    addDefaultStations();
-    logf("Loaded %u fallback stations", stationCount);
-  }
-
-  if (stationCount == 0) {
-    addDefaultStations();
+    logf("No stations loaded; %s is required on SD", STATIONS_FILE);
+    setStatus("Missing stations.csv on SD");
   }
   const int maxStationIndex = stationCount > 0 ? stationCount - 1 : 0;
   const int maxScrollIndex = stationCount > 5 ? stationCount - 5 : 0;
@@ -2883,12 +2906,8 @@ bool saveStationsText(const String &text) {
       ok = true;
     }
   }
-  prefs.putString("stationsCsv", text);
   stationCount = 0;
   loadStationsFromText(text);
-  if (!stationCount) {
-    addDefaultStations();
-  }
   const int maxStationIndex = stationCount > 0 ? stationCount - 1 : 0;
   const int maxScrollIndex = stationCount > 5 ? stationCount - 5 : 0;
   currentStation = constrain(currentStation, 0, maxStationIndex);
@@ -3126,6 +3145,7 @@ void saveRuntimeConfig(bool immediate) {
 
   if (!sdReady) {
     configDirty = false;
+    setStatus("Cannot save config: SD missing");
     return;
   }
   if (!immediate && (!configDirty || millis() - configDirtyMs < CONFIG_SAVE_DELAY_MS)) {
@@ -4557,6 +4577,7 @@ void traceI2sIfNeeded() {
 
 void setupRadio() {
   initDebug();
+  preferBinLoaderOnNextReset();
   initPixel();
   initApName();
   setLedMode(LedMode::Boot);
@@ -4584,7 +4605,7 @@ void setupRadio() {
 
   lvglShowBootStep("Mounting SD", 34);
   initSd();
-  lvglShowBootStep(sdReady ? "SD mounted" : "SD fallback mode", 44);
+  lvglShowBootStep(sdDataReady ? "SD data ready" : "SD data missing", 44);
 
   lvglShowBootStep("Loading config", 54);
   loadRuntimeConfig();
