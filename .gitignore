@@ -39,6 +39,10 @@ sd_card_export.zip
 
 # Do not commit private SD dumps with credentials.
 # Keep the sanitized sample files in sd_card/.
+private_files/*
+!private_files/
+!private_files/README.md
+sd_card/apps_data/ESP-WiFi-Scanner/wifi_creds.csv
 sd_private/
 private_sd/
 secrets/

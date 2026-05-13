@@ -46,7 +46,7 @@ Used by `ESP32WiFiRadioPilot/`.
 - Display: 1.47 inch 172x320 touch LCD
 - Display controller path: Arduino_GFX `Arduino_ST7789` with custom init table
 - Touch: AXS5106L on I2C
-- Battery ADC: GPIO0
+- Battery ADC: GPIO0 through the onboard voltage divider
 - Upload/debug port used during development: `COM5`, `115200`
 
 Pins used by the pilot:

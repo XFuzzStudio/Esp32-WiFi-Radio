@@ -73,7 +73,7 @@ namespace {
 
 static constexpr uint8_t MAX_STATIONS = 50;
 static constexpr char APP_NAME[] = "ESP32 WiFi Radio";
-static constexpr char APP_VERSION[] = "1.0";
+static constexpr char APP_VERSION[] = "1.1";
 static constexpr uint8_t DEFAULT_VOLUME = 13;
 static constexpr uint8_t MAX_VOLUME = 21;
 static constexpr uint16_t DEFAULT_TOUCH_DEBOUNCE_MS = 170;
@@ -107,7 +107,7 @@ static constexpr int8_t DEBUG_UART_TX = 43;
 static constexpr char APP_DATA_DIR[] = "/apps_data/ESP32WiFiRadio";
 static constexpr char STATIONS_FILE[] = "/apps_data/ESP32WiFiRadio/stations.csv";
 static constexpr char CONFIG_FILE[] = "/apps_data/ESP32WiFiRadio/radio.cfg";
-static constexpr char COVERS_DIR[] = "/apps_data/ESP32WiFiRadio/covers";
+static constexpr char DEFAULT_AP_PASSWORD[] = "radio1234";
 
 static const IPAddress AP_IP(192, 168, 4, 1);
 static const IPAddress AP_NETMASK(255, 255, 255, 0);
@@ -136,11 +136,9 @@ static constexpr uint16_t C_APP_ACCENT_2 = 0xBEFF;
 struct Station {
   String name;
   String url;
-  String coverUrl;
-  String coverPath;
 };
 
-struct ThemeDef {
+struct DisplayPalette {
   const char *id;
   const char *label;
   uint16_t header;
@@ -191,7 +189,9 @@ enum class LvglAction : intptr_t {
   ApToggle,
   ReloadSd,
   ReconnectWifi,
-  Theme,
+  DarkMode,
+  StationUp,
+  StationDown,
   PairRemote,
   ClearWifi,
   Back,
@@ -214,7 +214,7 @@ uint8_t stationCount = 0;
 int currentStation = 0;
 int scrollStation = 0;
 uint8_t volumeLevel = DEFAULT_VOLUME;
-uint8_t themeIndex = 0;
+bool darkMode = true;
 
 UiScreen uiScreen = UiScreen::Main;
 LedMode ledMode = LedMode::Boot;
@@ -235,7 +235,6 @@ bool audioPinoutReady = false;
 bool codecTrace = false;
 bool i2sTrace = false;
 bool autoPlay = true;
-bool coverDownload = true;
 bool configDirty = false;
 bool ledEnabled = true;
 bool startApOnBoot = false;
@@ -307,6 +306,7 @@ LedEffect ledIdleEffect = LedEffect::Breathe;
 LedEffect ledErrorEffect = LedEffect::Blink;
 
 char apName[32] = {0};
+String apPassword = DEFAULT_AP_PASSWORD;
 char streamTitle[128] = {0};
 char audioStatus[96] = "Ready";
 char clockText[16] = "--:--";
@@ -340,8 +340,6 @@ lv_obj_t *lvRemote = nullptr;
 lv_obj_t *lvNetwork = nullptr;
 lv_obj_t *lvNowPlaying = nullptr;
 lv_obj_t *lvStation = nullptr;
-lv_obj_t *lvCover = nullptr;
-lv_obj_t *lvCoverText = nullptr;
 lv_obj_t *lvStationButtons[5] = {nullptr};
 lv_obj_t *lvStationLabels[5] = {nullptr};
 lv_obj_t *lvButtonPrev = nullptr;
@@ -351,7 +349,9 @@ lv_obj_t *lvButtonVolDown = nullptr;
 lv_obj_t *lvButtonMenu = nullptr;
 lv_obj_t *lvButtonVolUp = nullptr;
 lv_obj_t *lvMenuStatus = nullptr;
-lv_obj_t *lvMenuTheme = nullptr;
+lv_obj_t *lvMenuDarkMode = nullptr;
+lv_obj_t *lvStationScrollUp = nullptr;
+lv_obj_t *lvStationScrollDown = nullptr;
 lv_obj_t *lvMenuAp = nullptr;
 lv_obj_t *lvMenuRemote = nullptr;
 lv_obj_t *lvSaverClock = nullptr;
@@ -371,7 +371,7 @@ bool lvglBootBuilt = false;
 static uint16_t lvglDrawBuffer[LVGL_SCREEN_W * LVGL_BUFFER_ROWS];
 
 const char DEFAULT_STATIONS[] =
-  "# name|stream_url|optional_cover_bmp_url\n"
+  "# name|stream_url\n"
   "Groove Salad|http://ice5.somafm.com/groovesalad-128-mp3\n"
   "Drone Zone|http://ice5.somafm.com/dronezone-128-mp3\n"
   "Deep Space One|http://ice5.somafm.com/deepspaceone-128-mp3\n";
@@ -379,11 +379,10 @@ const char DEFAULT_STATIONS[] =
 const char DEFAULT_CONFIG[] =
   "# ESP32 WiFi Radio config\n"
   "# WiFi values are plain text on SD. Leave wifi_ssid empty to keep NVS/AP settings.\n"
-  "# theme: ocean, forest, sunset, mono, aurora, ember, berry, ice, mint, plum, steel, amber, neon, wine\n"
-  "theme=ocean\n"
+  "dark_mode=1\n"
+  "ap_password=radio1234\n"
   "volume=13\n"
   "autoplay=1\n"
-  "cover_download=1\n"
   "startup_station=last\n"
   "wifi_ssid=\n"
   "wifi_password=\n"
@@ -418,31 +417,23 @@ const char DEFAULT_CONFIG[] =
   "# battery_scale_permille default 2000 means ADC voltage times 2.000\n"
   "# remote_paired_mac is written by the ESP32-C6 pilot pairing flow\n";
 
-const ThemeDef THEMES[] = {
-  {"ocean", "Ocean", C_BLUE, C_DARK, C_PANEL, C_PANEL, C_CYAN, C_GREEN, 0, 54, 70},
-  {"forest", "Forest", 0x03A0, 0x1944, 0x2265, 0x1A24, C_GREEN, C_CYAN, 0, 70, 18},
-  {"sunset", "Sunset", 0xC320, 0x3123, 0x49C4, 0x4143, C_ORANGE, C_YELLOW, 80, 30, 0},
-  {"mono", "Mono", 0x4208, 0x2104, 0x3186, 0x2945, C_WHITE, C_CYAN, 42, 42, 42},
-  {"aurora", "Aurora", 0x04B0, 0x1129, 0x214C, 0x124A, 0x07F0, 0xF81F, 0, 80, 54},
-  {"ember", "Ember", 0xB104, 0x2882, 0x3903, 0x5943, C_ORANGE, C_YELLOW, 90, 24, 0},
-  {"berry", "Berry", 0x8811, 0x2007, 0x302A, 0x4810, 0xF81F, 0x07FF, 84, 0, 60},
-  {"ice", "Ice", 0x039F, 0x112C, 0x21CF, 0x1230, C_WHITE, C_CYAN, 20, 64, 90},
-  {"mint", "Mint", 0x05E8, 0x1185, 0x2247, 0x1A06, 0x87F0, C_WHITE, 12, 82, 48},
-  {"plum", "Plum", 0x6015, 0x2008, 0x302B, 0x4010, 0xA81F, 0xFD20, 64, 18, 82},
-  {"steel", "Steel", 0x4A69, 0x2104, 0x3186, 0x39E7, 0x867D, C_WHITE, 46, 56, 68},
-  {"amber", "Amber", 0xA380, 0x2920, 0x3A00, 0x5260, C_YELLOW, C_ORANGE, 86, 44, 0},
-  {"neon", "Neon", 0x0014, 0x080C, 0x1027, 0x1810, 0x07F0, 0xF81F, 20, 90, 78},
-  {"wine", "Wine", 0x7806, 0x2803, 0x3805, 0x5007, 0xF8AA, C_YELLOW, 86, 10, 28},
+const DisplayPalette DISPLAY_PALETTES[] = {
+  {"light", "Light", 0xFFFF, 0xEF7D, 0xFFFF, 0xEF7D, C_APP_ACCENT, C_APP_ACCENT_2, 0, 54, 70},
+  {"dark", "Dark", 0x18E3, 0x0841, 0x2104, 0x3186, C_CYAN, C_GREEN, 0, 54, 70},
 };
 
-static constexpr uint8_t THEME_COUNT = sizeof(THEMES) / sizeof(THEMES[0]);
+static constexpr uint8_t DISPLAY_PALETTE_COUNT = sizeof(DISPLAY_PALETTES) / sizeof(DISPLAY_PALETTES[0]);
 
 void logf(const char *fmt, ...);
 void setStatus(const char *fmt, ...);
 void invalidateUi(bool fullRedraw = false);
-const ThemeDef &theme();
-int themeIndexById(String id);
-void cycleTheme();
+const DisplayPalette &palette();
+int displayModeIndexById(String id);
+void toggleDarkMode();
+bool validApPassword(const String &value);
+void setApPassword(String value);
+String apInfoText();
+void scrollStations(int delta);
 bool parseBoolValue(String value, bool fallback);
 bool parseIntValue(String value, int &out);
 int boundedIntValue(String value, int minimum, int maximum, int fallback);
@@ -508,7 +499,6 @@ void lvglSyncUi();
 void lvglSyncHeader();
 void lvglSyncMain();
 void lvglSyncMenu();
-String lvglCoverInitials();
 void registerUiActivity();
 bool wakeScreenSaver();
 void serviceScreenSaver();
@@ -530,12 +520,6 @@ void drawMenu(bool fullRedraw);
 void drawHeader(const char *title);
 void drawWifiBars(int16_t x, int16_t y);
 void drawBatteryStatus(int16_t x, int16_t y);
-void drawCoverArt(int16_t x, int16_t y, int16_t w, int16_t h);
-bool drawBmpCover(const String &path, int16_t x, int16_t y, int16_t w, int16_t h);
-uint16_t read16(File &f);
-uint32_t read32(File &f);
-bool isAsciiAlphaNum(char c);
-char upperAscii(char c);
 void drawButton(int16_t x, int16_t y, int16_t w, int16_t h, const String &label, uint16_t bg, uint16_t fg);
 void drawTextClip(int16_t x, int16_t y, int16_t w, const String &text, uint16_t color, uint8_t size);
 String clipped(const String &text, uint16_t pixels, uint8_t size);
@@ -557,10 +541,6 @@ void loadStationsFromText(const String &text);
 void addStationLine(String line);
 void addDefaultStations();
 bool saveStationsText(const String &text);
-String stationCoverPath(const String &name, uint8_t index);
-String sanitizePathPart(String value);
-void prepareCoverForStation(int index);
-bool downloadCoverToSd(const String &url, const String &path);
 void initAudio();
 bool initEs8311();
 bool writeEs8311(uint8_t reg, uint8_t value);
@@ -631,30 +611,68 @@ void invalidateUi(bool fullRedraw) {
   }
 }
 
-const ThemeDef &theme() {
-  if (themeIndex >= THEME_COUNT) {
-    themeIndex = 0;
-  }
-  return THEMES[themeIndex];
+const DisplayPalette &palette() {
+  return DISPLAY_PALETTES[darkMode ? 1 : 0];
 }
 
-int themeIndexById(String id) {
+uint16_t uiBgColor() { return darkMode ? C_BLACK : C_APP_BG; }
+uint16_t uiSurfaceColor() { return darkMode ? 0x1082 : C_SURFACE; }
+uint16_t uiSurface2Color() { return darkMode ? 0x2104 : C_SURFACE_2; }
+uint16_t uiSurface3Color() { return darkMode ? 0x4208 : C_SURFACE_3; }
+uint16_t uiTextColor() { return darkMode ? C_WHITE : C_TEXT_MAIN; }
+uint16_t uiMutedColor() { return darkMode ? 0x9CF3 : C_TEXT_MUTED; }
+uint16_t uiAccentColor() { return darkMode ? C_CYAN : C_APP_ACCENT; }
+
+int displayModeIndexById(String id) {
   id.trim();
   id.toLowerCase();
-  for (uint8_t i = 0; i < THEME_COUNT; i++) {
-    if (id == THEMES[i].id) {
+  if (id == "1" || id == "true" || id == "yes" || id == "on" || id == "dark") {
+    return 1;
+  }
+  if (id == "0" || id == "false" || id == "no" || id == "off" || id == "light") {
+    return 0;
+  }
+  for (uint8_t i = 0; i < DISPLAY_PALETTE_COUNT; i++) {
+    if (id == DISPLAY_PALETTES[i].id) {
       return i;
     }
   }
   return -1;
 }
 
-void cycleTheme() {
-  themeIndex = (themeIndex + 1) % THEME_COUNT;
-  prefs.putUChar("theme", themeIndex);
+void toggleDarkMode() {
+  darkMode = !darkMode;
+  prefs.putBool("darkMode", darkMode);
   markConfigDirty();
-  setStatus("Theme: %s", theme().label);
+  setStatus("Dark mode: %s", darkMode ? "on" : "off");
   invalidateUi(true);
+}
+
+bool validApPassword(const String &value) {
+  return value.length() >= 8 && value.length() <= 63;
+}
+
+void setApPassword(String value) {
+  value.trim();
+  if (!validApPassword(value)) {
+    value = DEFAULT_AP_PASSWORD;
+  }
+  apPassword = value;
+  prefs.putString("apPass", apPassword);
+}
+
+String apInfoText() {
+  String text = "AP ";
+  text += AP_IP.toString();
+  text += " pass ";
+  text += apPassword;
+  return text;
+}
+
+void scrollStations(int delta) {
+  const int maxScroll = stationCount > 5 ? stationCount - 5 : 0;
+  scrollStation = constrain(scrollStation + delta, 0, maxScroll);
+  uiDirty = true;
 }
 
 bool parseBoolValue(String value, bool fallback) {
@@ -760,10 +778,10 @@ void appendLedEffectOptions(String &html, LedEffect active) {
 }
 
 void storeRuntimeConfigToPrefs() {
-  prefs.putUChar("theme", themeIndex);
+  prefs.putBool("darkMode", darkMode);
+  prefs.putString("apPass", apPassword);
   prefs.putUChar("volume", volumeLevel);
   prefs.putBool("autoplay", autoPlay);
-  prefs.putBool("cover", coverDownload);
   prefs.putBool("ledEn", ledEnabled);
   prefs.putUChar("ledBright", ledBrightness);
   prefs.putUChar("ledBootFx", static_cast<uint8_t>(ledBootEffect));
@@ -1067,6 +1085,23 @@ String remoteStatusText() {
     text += "%";
   }
   return text;
+}
+
+uint8_t remoteLinkBars() {
+  if (!remotePeerValid || remoteLastSeenMs == 0) {
+    return 0;
+  }
+  const uint32_t age = millis() - remoteLastSeenMs;
+  if (age >= REMOTE_LINK_TIMEOUT_MS) {
+    return 0;
+  }
+  if (age < 3000UL) {
+    return 3;
+  }
+  if (age < 7000UL) {
+    return 2;
+  }
+  return 1;
 }
 
 void remoteFillStatusPacket(RadioRemotePacket &packet, uint8_t type, uint8_t command) {
@@ -1403,7 +1438,7 @@ void lvglBuildBootScreen() {
   lv_obj_clean(lvglRoot);
   lv_obj_remove_style_all(lvglRoot);
   lv_obj_set_style_bg_opa(lvglRoot, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(lvglRoot, lvColor565(C_APP_BG), 0);
+  lv_obj_set_style_bg_color(lvglRoot, lvColor565(uiBgColor()), 0);
   lv_obj_clear_flag(lvglRoot, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t *top = lv_obj_create(lvglRoot);
@@ -1720,8 +1755,14 @@ void lvglButtonEvent(lv_event_t *event) {
     case LvglAction::ReconnectWifi:
       reconnectWifi();
       break;
-    case LvglAction::Theme:
-      cycleTheme();
+    case LvglAction::DarkMode:
+      toggleDarkMode();
+      break;
+    case LvglAction::StationUp:
+      scrollStations(-1);
+      break;
+    case LvglAction::StationDown:
+      scrollStations(1);
       break;
     case LvglAction::PairRemote:
       remoteBeginPairing();
@@ -1738,113 +1779,80 @@ void lvglButtonEvent(lv_event_t *event) {
   }
 }
 
-String lvglCoverInitials() {
-  String label = stationCount ? stations[currentStation].name : String("?");
-  label.trim();
-  char a = '?';
-  char b = 0;
-  int pos = 0;
-  while (pos < label.length() && !isAsciiAlphaNum(label[pos])) {
-    pos++;
-  }
-  if (pos < label.length()) {
-    a = upperAscii(label[pos]);
-  }
-  int space = label.indexOf(' ', pos + 1);
-  while (space >= 0 && space + 1 < label.length() && !isAsciiAlphaNum(label[space + 1])) {
-    space = label.indexOf(' ', space + 1);
-  }
-  if (space >= 0 && space + 1 < label.length()) {
-    b = upperAscii(label[space + 1]);
-  }
-  String out;
-  out += a;
-  if (b) {
-    out += b;
-  }
-  return out;
-}
-
 void lvglBuildHeader(lv_obj_t *parent, const char *title) {
   lv_obj_t *header = lv_obj_create(parent);
-  lvStylePanel(header, C_SURFACE);
+  lvStylePanel(header, uiSurfaceColor());
   lv_obj_set_pos(header, 0, 0);
   lv_obj_set_size(header, LVGL_SCREEN_W, 50);
   lv_obj_set_style_border_width(header, 1, 0);
-  lv_obj_set_style_border_color(header, lvColor565(C_SURFACE_3), 0);
+  lv_obj_set_style_border_color(header, lvColor565(uiSurface3Color()), 0);
 
-  lvTitle = lvMakeLabel(header, title, 10, 7, 70, 2, C_TEXT_MAIN);
-  lvClock = lvMakeLabel(header, "--:--", 10, 31, 58, 1, C_TEXT_MUTED);
+  lvTitle = lvMakeLabel(header, title, 10, 7, 70, 2, uiTextColor());
+  lvClock = lvMakeLabel(header, "--:--", 10, 31, 58, 1, uiMutedColor());
 
   lv_obj_t *volumeChip = lv_obj_create(header);
-  lvStylePanel(volumeChip, C_SURFACE_2, 7);
+  lvStylePanel(volumeChip, uiSurface2Color(), 7);
   lv_obj_set_pos(volumeChip, 84, 14);
   lv_obj_set_size(volumeChip, 30, 20);
   lv_obj_set_style_border_width(volumeChip, 1, 0);
-  lv_obj_set_style_border_color(volumeChip, lvColor565(C_SURFACE_3), 0);
-  lvVolume = lvMakeLabel(volumeChip, "", 0, 2, 30, 1, C_TEXT_MAIN);
+  lv_obj_set_style_border_color(volumeChip, lvColor565(uiSurface3Color()), 0);
+  lvVolume = lvMakeLabel(volumeChip, "", 0, 2, 30, 1, uiTextColor());
   lv_obj_set_style_text_align(lvVolume, LV_TEXT_ALIGN_CENTER, 0);
 
   lvBuildWifiIcon(header, 126, 17);
   lvBuildBatteryIcon(header, 148, 18);
   lvSd = lvMakeLabel(header, "", 190, 7, 42, 1, C_GREEN);
   lvRemote = lvMakeLabel(header, "", 174, 29, 22, 1, C_TEXT_MUTED);
-  lvPlayState = lvMakeLabel(header, "", 200, 29, 32, 1, C_APP_ACCENT);
+  lvPlayState = lvMakeLabel(header, "", 200, 29, 32, 1, uiAccentColor());
 }
 
 void lvglBuildMain() {
   lvglBuildHeader(lvglRoot, "Radio");
 
   lv_obj_t *status = lv_obj_create(lvglRoot);
-  lvStylePanel(status, C_SURFACE, 8);
+  lvStylePanel(status, uiSurfaceColor(), 8);
   lv_obj_set_pos(status, 8, 58);
   lv_obj_set_size(status, 224, 78);
   lv_obj_set_style_border_width(status, 1, 0);
-  lv_obj_set_style_border_color(status, lvColor565(C_SURFACE_3), 0);
-  lvNetwork = lvMakeLabel(status, "", 12, 9, 150, 1, C_GREEN);
-  lvNowPlaying = lvMakeLabel(status, "", 12, 30, 148, 1, C_TEXT_MAIN);
-  lvStation = lvMakeLabel(status, "", 12, 52, 148, 1, C_TEXT_MUTED);
-  lvCover = lv_obj_create(status);
-  lvStylePanel(lvCover, C_SURFACE_2, 8);
-  lv_obj_set_style_border_width(lvCover, 1, 0);
-  lv_obj_set_style_border_color(lvCover, lvColor565(C_SURFACE_3), 0);
-  lv_obj_set_pos(lvCover, 168, 14);
-  lv_obj_set_size(lvCover, 44, 44);
-  lvCoverText = lvMakeLabel(lvCover, "?", 0, 13, 44, 2, C_TEXT_MAIN);
-  lv_obj_set_style_text_align(lvCoverText, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_border_color(status, lvColor565(uiSurface3Color()), 0);
+  lvNetwork = lvMakeLabel(status, "", 12, 9, 200, 1, C_GREEN);
+  lvNowPlaying = lvMakeLabel(status, "", 12, 30, 200, 1, uiTextColor());
+  lvStation = lvMakeLabel(status, "", 12, 52, 200, 1, uiMutedColor());
 
   const int listY = 144;
   const int rowH = 21;
   for (int i = 0; i < 5; i++) {
-    lvStationButtons[i] = lvMakeButton(lvglRoot, "", 8, listY + i * rowH, 224, rowH - 3, C_SURFACE, C_TEXT_MAIN, static_cast<LvglAction>(static_cast<int>(LvglAction::Station0) + i));
+    lvStationButtons[i] = lvMakeButton(lvglRoot, "", 8, listY + i * rowH, 190, rowH - 3, uiSurfaceColor(), uiTextColor(), static_cast<LvglAction>(static_cast<int>(LvglAction::Station0) + i));
     lvStationLabels[i] = lv_obj_get_child(lvStationButtons[i], 0);
   }
+  lvStationScrollUp = lvMakeButton(lvglRoot, "^", 204, 144, 28, 47, uiSurface2Color(), uiTextColor(), LvglAction::StationUp);
+  lvStationScrollDown = lvMakeButton(lvglRoot, "v", 204, 197, 28, 47, uiSurface2Color(), uiTextColor(), LvglAction::StationDown);
 
-  lvButtonPrev = lvMakeButton(lvglRoot, "Prev", 8, 246, 68, 30, C_SURFACE_2, C_TEXT_MAIN, LvglAction::Prev);
-  lvButtonPlay = lvMakeButton(lvglRoot, "Play", 86, 246, 68, 30, C_APP_ACCENT, C_BLACK, LvglAction::PlayStop);
-  lvButtonNext = lvMakeButton(lvglRoot, "Next", 164, 246, 68, 30, C_SURFACE_2, C_TEXT_MAIN, LvglAction::Next);
-  lvButtonVolDown = lvMakeButton(lvglRoot, "Vol-", 8, 284, 68, 30, C_SURFACE_2, C_TEXT_MAIN, LvglAction::VolDown);
-  lvButtonMenu = lvMakeButton(lvglRoot, "Menu", 86, 284, 68, 30, C_SURFACE, C_TEXT_MAIN, LvglAction::Menu);
-  lvButtonVolUp = lvMakeButton(lvglRoot, "Vol+", 164, 284, 68, 30, C_SURFACE_2, C_TEXT_MAIN, LvglAction::VolUp);
+  lvButtonPrev = lvMakeButton(lvglRoot, "Prev", 8, 246, 68, 30, uiSurface2Color(), uiTextColor(), LvglAction::Prev);
+  lvButtonPlay = lvMakeButton(lvglRoot, "Play", 86, 246, 68, 30, uiAccentColor(), C_BLACK, LvglAction::PlayStop);
+  lvButtonNext = lvMakeButton(lvglRoot, "Next", 164, 246, 68, 30, uiSurface2Color(), uiTextColor(), LvglAction::Next);
+  lvButtonVolDown = lvMakeButton(lvglRoot, "Vol-", 8, 284, 68, 30, uiSurface2Color(), uiTextColor(), LvglAction::VolDown);
+  lvButtonMenu = lvMakeButton(lvglRoot, "Menu", 86, 284, 68, 30, uiSurfaceColor(), uiTextColor(), LvglAction::Menu);
+  lvButtonVolUp = lvMakeButton(lvglRoot, "Vol+", 164, 284, 68, 30, uiSurface2Color(), uiTextColor(), LvglAction::VolUp);
 }
 
 void lvglBuildMenu() {
   lvglBuildHeader(lvglRoot, "Menu");
   lv_obj_t *panel = lv_obj_create(lvglRoot);
-  lvStylePanel(panel, C_SURFACE, 8);
+  lvStylePanel(panel, uiSurfaceColor(), 8);
   lv_obj_set_pos(panel, 8, 60);
   lv_obj_set_size(panel, 224, 46);
   lv_obj_set_style_border_width(panel, 1, 0);
-  lv_obj_set_style_border_color(panel, lvColor565(C_SURFACE_3), 0);
-  lvMenuStatus = lvMakeLabel(panel, "", 12, 14, 200, 1, C_TEXT_MUTED);
+  lv_obj_set_style_border_color(panel, lvColor565(uiSurface3Color()), 0);
+  lvMenuStatus = lvMakeLabel(panel, "", 12, 14, 200, 1, uiMutedColor());
 
-  lvMenuAp = lvMakeButton(lvglRoot, apActive ? "AP Off" : "Start AP", 12, 110, 216, 30, apActive ? C_ORANGE : C_SURFACE_2, C_TEXT_MAIN, LvglAction::ApToggle);
-  lvMakeButton(lvglRoot, "Reload SD", 12, 144, 216, 30, C_SURFACE_2, C_TEXT_MAIN, LvglAction::ReloadSd);
-  lvMakeButton(lvglRoot, "Reconnect WiFi", 12, 178, 216, 30, C_SURFACE_2, C_TEXT_MAIN, LvglAction::ReconnectWifi);
-  lvMenuTheme = lvMakeButton(lvglRoot, String("Theme: ") + theme().label, 12, 212, 216, 30, C_APP_ACCENT, C_BLACK, LvglAction::Theme);
-  lvMenuRemote = lvMakeButton(lvglRoot, remotePairingMode ? "Pairing..." : "Pair Pilot", 12, 246, 104, 30, remotePairingMode ? C_ORANGE : C_SURFACE_2, C_TEXT_MAIN, LvglAction::PairRemote);
+  lvMenuAp = lvMakeButton(lvglRoot, apActive ? "AP Off" : "Start AP", 12, 110, 216, 30, apActive ? C_ORANGE : uiSurface2Color(), uiTextColor(), LvglAction::ApToggle);
+  lvMakeButton(lvglRoot, "Reload SD", 12, 144, 216, 30, uiSurface2Color(), uiTextColor(), LvglAction::ReloadSd);
+  lvMakeButton(lvglRoot, "Reconnect WiFi", 12, 178, 216, 30, uiSurface2Color(), uiTextColor(), LvglAction::ReconnectWifi);
+  lvMenuDarkMode = lvMakeButton(lvglRoot, String("Dark mode: ") + (darkMode ? "ON" : "OFF"), 12, 212, 216, 30, C_APP_ACCENT, C_BLACK, LvglAction::DarkMode);
+  lvMenuRemote = lvMakeButton(lvglRoot, remotePairingMode ? "Pairing..." : "Pair Pilot", 12, 246, 104, 30, remotePairingMode ? C_ORANGE : uiSurface2Color(), uiTextColor(), LvglAction::PairRemote);
   lvMakeButton(lvglRoot, "Clear WiFi", 124, 246, 104, 30, C_RED, C_WHITE, LvglAction::ClearWifi);
-  lvMakeButton(lvglRoot, "Back", 12, 282, 216, 30, C_SURFACE, C_TEXT_MAIN, LvglAction::Back);
+  lvMakeButton(lvglRoot, "Back", 12, 282, 216, 30, uiSurfaceColor(), uiTextColor(), LvglAction::Back);
 }
 
 void lvglBuildUi(bool fullRedraw) {
@@ -1857,7 +1865,7 @@ void lvglBuildUi(bool fullRedraw) {
   lv_obj_clean(lvglRoot);
   lv_obj_remove_style_all(lvglRoot);
   lv_obj_set_style_bg_opa(lvglRoot, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(lvglRoot, lvColor565(C_APP_BG), 0);
+  lv_obj_set_style_bg_color(lvglRoot, lvColor565(uiBgColor()), 0);
   lv_obj_clear_flag(lvglRoot, LV_OBJ_FLAG_SCROLLABLE);
 
   lvTitle = nullptr;
@@ -1878,10 +1886,10 @@ void lvglBuildUi(bool fullRedraw) {
   lvNetwork = nullptr;
   lvNowPlaying = nullptr;
   lvStation = nullptr;
-  lvCover = nullptr;
-  lvCoverText = nullptr;
   lvMenuStatus = nullptr;
-  lvMenuTheme = nullptr;
+  lvMenuDarkMode = nullptr;
+  lvStationScrollUp = nullptr;
+  lvStationScrollDown = nullptr;
   lvMenuAp = nullptr;
   lvMenuRemote = nullptr;
   lvSaverClock = nullptr;
@@ -1919,7 +1927,7 @@ void lvglSyncHeader() {
   lv_label_set_text(lvTitle, uiScreen == UiScreen::Menu ? "Menu" : "Radio");
   if (lvClock) {
     lv_label_set_text(lvClock, clockText);
-    lv_obj_set_style_text_color(lvClock, lvColor565(clockValid ? C_TEXT_MAIN : C_TEXT_MUTED), 0);
+    lv_obj_set_style_text_color(lvClock, lvColor565(clockValid ? uiTextColor() : uiMutedColor()), 0);
   }
   if (lvVolume) {
     lv_label_set_text(lvVolume, (String("V") + String(volumeLevel)).c_str());
@@ -1932,12 +1940,12 @@ void lvglSyncHeader() {
   }
   if (lvPlayState) {
     lv_label_set_text(lvPlayState, playing ? "PLAY" : "STOP");
-    lv_obj_set_style_text_color(lvPlayState, lvColor565(playing ? C_APP_ACCENT : C_TEXT_MUTED), 0);
+    lv_obj_set_style_text_color(lvPlayState, lvColor565(playing ? uiAccentColor() : uiMutedColor()), 0);
   }
   if (lvRemote) {
-    const bool active = remoteLinkActive();
-    lv_label_set_text(lvRemote, active ? "P+" : (remotePeerValid ? "P-" : "P?"));
-    lv_obj_set_style_text_color(lvRemote, lvColor565(active ? C_GREEN : (remotePeerValid ? C_YELLOW : C_TEXT_MUTED)), 0);
+    const uint8_t bars = remoteLinkBars();
+    lv_label_set_text(lvRemote, bars ? (String("P") + String(bars)).c_str() : (remotePeerValid ? "P-" : "P?"));
+    lv_obj_set_style_text_color(lvRemote, lvColor565(bars >= 2 ? C_GREEN : (bars == 1 || remotePeerValid ? C_YELLOW : C_TEXT_MUTED)), 0);
   }
 }
 
@@ -1948,11 +1956,9 @@ void lvglSyncMain() {
   lv_label_set_text(lvNetwork, networkText().c_str());
   lv_obj_set_style_text_color(lvNetwork, lvColor565(WiFi.status() == WL_CONNECTED ? C_GREEN : C_YELLOW), 0);
   lv_label_set_text(lvNowPlaying, streamTitle[0] ? streamTitle : audioStatus);
-  lv_obj_set_style_text_color(lvNowPlaying, lvColor565(C_TEXT_MAIN), 0);
+  lv_obj_set_style_text_color(lvNowPlaying, lvColor565(uiTextColor()), 0);
   lv_label_set_text(lvStation, stationCount ? stations[currentStation].name.c_str() : "No stations");
-  lv_obj_set_style_text_color(lvStation, lvColor565(C_TEXT_MUTED), 0);
-  lv_label_set_text(lvCoverText, lvglCoverInitials().c_str());
-
+  lv_obj_set_style_text_color(lvStation, lvColor565(uiMutedColor()), 0);
   for (uint8_t i = 0; i < 5; i++) {
     const int idx = scrollStation + i;
     if (!lvStationButtons[i]) {
@@ -1961,14 +1967,14 @@ void lvglSyncMain() {
     if (idx < stationCount) {
       lv_obj_clear_flag(lvStationButtons[i], LV_OBJ_FLAG_HIDDEN);
       lv_label_set_text(lvStationLabels[i], stations[idx].name.c_str());
-      uint16_t bg = C_SURFACE;
-      uint16_t fg = C_TEXT_MAIN;
+      uint16_t bg = uiSurfaceColor();
+      uint16_t fg = uiTextColor();
       if (idx == currentStation && playing) {
-        bg = C_APP_ACCENT;
+        bg = uiAccentColor();
         fg = C_WHITE;
       } else if (idx == currentStation) {
-        bg = C_APP_ACCENT_2;
-        fg = C_TEXT_MAIN;
+        bg = darkMode ? 0x0451 : C_APP_ACCENT_2;
+        fg = uiTextColor();
       }
       lv_obj_set_style_bg_color(lvStationButtons[i], lvColor565(bg), 0);
       lv_obj_set_style_text_color(lvStationLabels[i], lvColor565(fg), 0);
@@ -1979,7 +1985,15 @@ void lvglSyncMain() {
 
   lvSetButtonText(lvButtonPlay, playing ? "Stop" : "Play");
   if (lvButtonPlay) {
-    lv_obj_set_style_bg_color(lvButtonPlay, lvColor565(playing ? C_RED : C_APP_ACCENT), 0);
+    lv_obj_set_style_bg_color(lvButtonPlay, lvColor565(playing ? C_RED : uiAccentColor()), 0);
+  }
+  const bool canScrollUp = scrollStation > 0;
+  const bool canScrollDown = stationCount > 5 && scrollStation < static_cast<int>(stationCount) - 5;
+  if (lvStationScrollUp) {
+    lv_obj_set_style_bg_color(lvStationScrollUp, lvColor565(canScrollUp ? uiSurface2Color() : uiSurface3Color()), 0);
+  }
+  if (lvStationScrollDown) {
+    lv_obj_set_style_bg_color(lvStationScrollDown, lvColor565(canScrollDown ? uiSurface2Color() : uiSurface3Color()), 0);
   }
 }
 
@@ -1989,10 +2003,10 @@ void lvglSyncMenu() {
   }
   lv_label_set_text(lvMenuStatus, (networkText() + "  " + String(audioStatus)).c_str());
   lvSetButtonText(lvMenuAp, apActive ? "AP Off" : "Start AP");
-  lvSetButtonText(lvMenuTheme, String("Theme: ") + theme().label);
+  lvSetButtonText(lvMenuDarkMode, String("Dark mode: ") + (darkMode ? "ON" : "OFF"));
   lvSetButtonText(lvMenuRemote, remotePairingMode ? "Pairing..." : "Pair Pilot");
   if (lvMenuRemote) {
-    lv_obj_set_style_bg_color(lvMenuRemote, lvColor565(remotePairingMode ? C_ORANGE : C_SURFACE_2), 0);
+    lv_obj_set_style_bg_color(lvMenuRemote, lvColor565(remotePairingMode ? C_ORANGE : uiSurface2Color()), 0);
   }
 }
 
@@ -2182,7 +2196,7 @@ void updateLed() {
       showLedEffect(ledApEffect, now, 0, 30, 90, false);
       break;
     case LedMode::Streaming: {
-      const ThemeDef &t = theme();
+      const DisplayPalette &t = palette();
       showLedEffect(ledStreamingEffect, now, t.ledR, t.ledG, t.ledB, true);
       break;
     }
@@ -2368,140 +2382,6 @@ void drawScreenSaver() {
   lastScreenSaverDrawMs = millis();
 }
 
-uint16_t read16(File &f) {
-  uint16_t value = f.read();
-  value |= static_cast<uint16_t>(f.read()) << 8;
-  return value;
-}
-
-uint32_t read32(File &f) {
-  uint32_t value = read16(f);
-  value |= static_cast<uint32_t>(read16(f)) << 16;
-  return value;
-}
-
-bool drawBmpCover(const String &path, int16_t x, int16_t y, int16_t w, int16_t h) {
-  if (!sdReady || !path.length() || !SD_MMC.exists(path)) {
-    return false;
-  }
-
-  File bmp = SD_MMC.open(path, FILE_READ);
-  if (!bmp) {
-    return false;
-  }
-
-  if (read16(bmp) != 0x4D42) {
-    bmp.close();
-    return false;
-  }
-  (void)read32(bmp);
-  (void)read32(bmp);
-  const uint32_t dataOffset = read32(bmp);
-  const uint32_t headerSize = read32(bmp);
-  if (headerSize < 40) {
-    bmp.close();
-    return false;
-  }
-  const int32_t bmpW = static_cast<int32_t>(read32(bmp));
-  const int32_t bmpHRaw = static_cast<int32_t>(read32(bmp));
-  const bool bottomUp = bmpHRaw > 0;
-  const int32_t bmpH = bottomUp ? bmpHRaw : -bmpHRaw;
-  const uint16_t planes = read16(bmp);
-  const uint16_t bpp = read16(bmp);
-  const uint32_t compression = read32(bmp);
-  if (planes != 1 || bmpW <= 0 || bmpH <= 0 || (bpp != 16 && bpp != 24) || (compression != 0 && compression != 3)) {
-    bmp.close();
-    return false;
-  }
-
-  const uint32_t rowSize = ((static_cast<uint32_t>(bmpW) * bpp + 31) / 32) * 4;
-  Arduino_GFX *gfx = display.gfx();
-  for (int16_t oy = 0; oy < h; oy++) {
-    const int32_t srcY = (static_cast<int32_t>(oy) * bmpH) / h;
-    const int32_t fileY = bottomUp ? (bmpH - 1 - srcY) : srcY;
-    for (int16_t ox = 0; ox < w; ox++) {
-      const int32_t srcX = (static_cast<int32_t>(ox) * bmpW) / w;
-      const uint32_t pos = dataOffset + fileY * rowSize + srcX * (bpp / 8);
-      if (!bmp.seek(pos)) {
-        bmp.close();
-        return false;
-      }
-      uint16_t color = C_BLACK;
-      if (bpp == 24) {
-        const uint8_t b = bmp.read();
-        const uint8_t g = bmp.read();
-        const uint8_t r = bmp.read();
-        color = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-      } else {
-        color = read16(bmp);
-      }
-      gfx->drawPixel(x + ox, y + oy, color);
-    }
-  }
-
-  bmp.close();
-  return true;
-}
-
-bool isAsciiAlphaNum(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
-}
-
-char upperAscii(char c) {
-  if (c >= 'a' && c <= 'z') {
-    return c - 'a' + 'A';
-  }
-  return c;
-}
-
-void drawCoverArt(int16_t x, int16_t y, int16_t w, int16_t h) {
-  Arduino_GFX *gfx = display.gfx();
-  gfx->fillRect(x, y, w, h, theme().panel);
-  gfx->drawRect(x, y, w, h, C_DIM);
-
-  if (stationCount && drawBmpCover(stations[currentStation].coverPath, x + 1, y + 1, w - 2, h - 2)) {
-    gfx->drawRect(x, y, w, h, C_WHITE);
-    return;
-  }
-
-  String label = stationCount ? stations[currentStation].name : String("?");
-  label.trim();
-  char a = '?';
-  char b = 0;
-  int pos = 0;
-  while (pos < label.length() && !isAsciiAlphaNum(label[pos])) {
-    pos++;
-  }
-  if (pos < label.length()) {
-    a = upperAscii(label[pos]);
-  }
-  int space = label.indexOf(' ', pos + 1);
-  while (space >= 0 && space + 1 < label.length() && !isAsciiAlphaNum(label[space + 1])) {
-    space = label.indexOf(' ', space + 1);
-  }
-  if (space >= 0 && space + 1 < label.length()) {
-    b = upperAscii(label[space + 1]);
-  }
-
-  uint32_t hash = 2166136261UL;
-  for (uint16_t i = 0; i < label.length(); i++) {
-    hash ^= static_cast<uint8_t>(label[i]);
-    hash *= 16777619UL;
-  }
-  const uint8_t r = 40 + (hash & 0x5F);
-  const uint8_t g = 40 + ((hash >> 8) & 0x5F);
-  const uint8_t bl = 40 + ((hash >> 16) & 0x5F);
-  const uint16_t bg = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (bl >> 3);
-  gfx->fillRect(x + 3, y + 3, w - 6, h - 6, bg);
-  gfx->setTextWrap(false);
-  gfx->setTextColor(C_WHITE);
-  gfx->setTextSize(2);
-  char initials[3] = {a, b ? b : 0, 0};
-  const int16_t textW = (b ? 2 : 1) * 12;
-  gfx->setCursor(x + (w - textW) / 2, y + (h - 16) / 2);
-  gfx->print(initials);
-}
-
 String networkText() {
   if (WiFi.status() == WL_CONNECTED) {
     String s = "STA ";
@@ -2512,9 +2392,7 @@ String networkText() {
     return s;
   }
   if (apActive) {
-    String s = "AP ";
-    s += AP_IP.toString();
-    return s;
+    return apInfoText();
   }
   return "Offline";
 }
@@ -2552,7 +2430,7 @@ void drawBatteryStatus(int16_t x, int16_t y) {
 
 void drawHeader(const char *title) {
   Arduino_GFX *gfx = display.gfx();
-  const ThemeDef &t = theme();
+  const DisplayPalette &t = palette();
   gfx->fillRect(0, 0, 240, 32, t.header);
   drawTextClip(6, 7, 84, title, C_WHITE, 2);
   drawTextClip(6, 22, 74, clockText, clockValid ? C_WHITE : C_DIM, 1);
@@ -2568,7 +2446,7 @@ void drawHeader(const char *title) {
 
 void drawMain(bool fullRedraw) {
   Arduino_GFX *gfx = display.gfx();
-  const ThemeDef &t = theme();
+  const DisplayPalette &t = palette();
   if (fullRedraw) {
     gfx->fillScreen(C_BLACK);
   }
@@ -2578,7 +2456,6 @@ void drawMain(bool fullRedraw) {
   drawTextClip(6, 38, 172, networkText(), WiFi.status() == WL_CONNECTED ? C_GREEN : C_YELLOW, 1);
   drawTextClip(6, 54, 172, streamTitle[0] ? String(streamTitle) : String(audioStatus), C_WHITE, 1);
   drawTextClip(6, 70, 172, stationCount ? stations[currentStation].name : String("No stations"), C_DIM, 1);
-  drawCoverArt(184, 36, 50, 50);
 
   const int listY = 94;
   const int rowH = 27;
@@ -2612,7 +2489,7 @@ void drawMain(bool fullRedraw) {
 
 void drawMenu(bool fullRedraw) {
   Arduino_GFX *gfx = display.gfx();
-  const ThemeDef &t = theme();
+  const DisplayPalette &t = palette();
   if (fullRedraw) {
     gfx->fillScreen(C_BLACK);
   }
@@ -2623,7 +2500,7 @@ void drawMenu(bool fullRedraw) {
   drawButton(12, 72, 216, 32, apActive ? "AP Off" : "Start AP", apActive ? C_ORANGE : t.header, apActive ? C_BLACK : C_WHITE);
   drawButton(12, 112, 216, 32, "Reload SD", t.button, C_WHITE);
   drawButton(12, 152, 216, 32, "Reconnect WiFi", t.button, C_WHITE);
-  drawButton(12, 192, 216, 32, String("Theme: ") + theme().label, t.accent, C_BLACK);
+  drawButton(12, 192, 216, 32, String("Dark mode: ") + (darkMode ? "ON" : "OFF"), t.accent, C_BLACK);
   drawButton(12, 232, 104, 32, remotePairingMode ? "Pairing..." : "Pair Pilot", remotePairingMode ? C_ORANGE : t.button, C_WHITE);
   drawButton(124, 232, 104, 32, "Clear WiFi", C_RED, C_WHITE);
   drawButton(12, 276, 216, 34, "Back", t.highlight, C_BLACK);
@@ -2674,10 +2551,6 @@ String stationsAsText() {
     text += stations[i].name;
     text += "|";
     text += stations[i].url;
-    if (stations[i].coverUrl.length()) {
-      text += "|";
-      text += stations[i].coverUrl;
-    }
     text += "\n";
   }
   if (!stationCount) {
@@ -2768,9 +2641,6 @@ void ensureSdFiles() {
   if (!SD_MMC.exists(APP_DATA_DIR)) {
     SD_MMC.mkdir(APP_DATA_DIR);
   }
-  if (!SD_MMC.exists(COVERS_DIR)) {
-    SD_MMC.mkdir(COVERS_DIR);
-  }
   const bool hasStations = SD_MMC.exists(STATIONS_FILE);
   const bool hasConfig = SD_MMC.exists(CONFIG_FILE);
   sdDataReady = hasStations && hasConfig;
@@ -2781,37 +2651,6 @@ void ensureSdFiles() {
          hasStations ? "" : STATIONS_FILE);
     setStatus("Missing SD files in %s", APP_DATA_DIR);
   }
-}
-
-String sanitizePathPart(String value) {
-  value.trim();
-  value.toLowerCase();
-  String out;
-  out.reserve(value.length());
-  for (uint16_t i = 0; i < value.length(); i++) {
-    const char c = value[i];
-    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
-      out += c;
-    } else if (c == ' ' || c == '-' || c == '_') {
-      if (!out.endsWith("_")) {
-        out += '_';
-      }
-    }
-  }
-  if (!out.length()) {
-    out = "station";
-  }
-  return out.substring(0, 24);
-}
-
-String stationCoverPath(const String &name, uint8_t index) {
-  String path = COVERS_DIR;
-  path += "/";
-  path += String(index);
-  path += "_";
-  path += sanitizePathPart(name);
-  path += ".bmp";
-  return path;
 }
 
 void addStationLine(String line) {
@@ -2827,20 +2666,20 @@ void addStationLine(String line) {
     return;
   }
   String name = line.substring(0, sep);
-  String rest = line.substring(sep + 1);
-  int coverSep = rest.indexOf('|');
-  String url = coverSep >= 0 ? rest.substring(0, coverSep) : rest;
-  String coverUrl = coverSep >= 0 ? rest.substring(coverSep + 1) : "";
+  String url = line.substring(sep + 1);
+  const int extraSep = url.indexOf('|');
+  if (extraSep >= 0) {
+    url = url.substring(0, extraSep);
+  }
   name.trim();
   url.trim();
-  coverUrl.trim();
   if (!name.length() || !(url.startsWith("http://") || url.startsWith("https://"))) {
     return;
   }
   if (stationCount >= MAX_STATIONS) {
     return;
   }
-  stations[stationCount] = {name, url, coverUrl, stationCoverPath(name, stationCount)};
+  stations[stationCount] = {name, url};
   stationCount++;
 }
 
@@ -2932,20 +2771,22 @@ void applyConfigLine(String line) {
   value.trim();
 
   if (key == "theme") {
-    const int idx = themeIndexById(value);
+    const int idx = displayModeIndexById(value);
     if (idx >= 0) {
-      themeIndex = idx;
-      prefs.putUChar("theme", themeIndex);
+      darkMode = idx == 1;
+      prefs.putBool("darkMode", darkMode);
     }
+  } else if (key == "dark_mode") {
+    darkMode = parseBoolValue(value, darkMode);
+    prefs.putBool("darkMode", darkMode);
+  } else if (key == "ap_password") {
+    setApPassword(value);
   } else if (key == "volume") {
     volumeLevel = static_cast<uint8_t>(boundedIntValue(value, 0, MAX_VOLUME, volumeLevel));
     prefs.putUChar("volume", volumeLevel);
   } else if (key == "autoplay") {
     autoPlay = parseBoolValue(value, autoPlay);
     prefs.putBool("autoplay", autoPlay);
-  } else if (key == "cover_download") {
-    coverDownload = parseBoolValue(value, coverDownload);
-    prefs.putBool("cover", coverDownload);
   } else if (key == "startup_station") {
     String normalized = value;
     normalized.toLowerCase();
@@ -3062,16 +2903,16 @@ void applyConfigText(const String &text) {
 }
 
 void loadRuntimeConfig() {
-  themeIndex = prefs.getUChar("theme", 0);
-  if (themeIndex >= THEME_COUNT) {
-    themeIndex = 0;
+  darkMode = prefs.getBool("darkMode", true);
+  apPassword = prefs.getString("apPass", DEFAULT_AP_PASSWORD);
+  if (!validApPassword(apPassword)) {
+    apPassword = DEFAULT_AP_PASSWORD;
   }
   volumeLevel = prefs.getUChar("volume", DEFAULT_VOLUME);
   if (volumeLevel > MAX_VOLUME) {
     volumeLevel = DEFAULT_VOLUME;
   }
   autoPlay = prefs.getBool("autoplay", true);
-  coverDownload = prefs.getBool("cover", true);
   ledEnabled = prefs.getBool("ledEn", true);
   ledBrightness = prefs.getUChar("ledBright", DEFAULT_LED_BRIGHTNESS);
   if (ledBrightness > 100) {
@@ -3129,11 +2970,10 @@ void loadRuntimeConfig() {
       const String text = f.readString();
       f.close();
       applyConfigText(text);
-      logf("Loaded config from SD: theme=%s volume=%u autoplay=%d cover=%d led=%d/%u%%",
-           theme().id,
+      logf("Loaded config from SD: dark=%d volume=%u autoplay=%d led=%d/%u%%",
+           darkMode ? 1 : 0,
            volumeLevel,
            autoPlay ? 1 : 0,
-           coverDownload ? 1 : 0,
            ledEnabled ? 1 : 0,
            ledBrightness);
     }
@@ -3159,25 +2999,21 @@ void saveRuntimeConfig(bool immediate) {
   }
   f.println("# ESP32 WiFi Radio config");
   f.println("# WiFi values are plain text on SD. Leave wifi_ssid empty to keep NVS/AP settings.");
-  f.print("# theme:");
-  for (uint8_t i = 0; i < THEME_COUNT; i++) {
-    f.print(i ? ", " : " ");
-    f.print(THEMES[i].id);
-  }
-  f.println();
+  f.println("# dark_mode: 1 for dark UI, 0 for light UI");
+  f.println("# ap_password: setup AP password, 8..63 characters");
   f.println("# led effects: off, solid, breathe, blink, vu");
   f.println("# startup_station: last or station index");
   f.println("# safe ranges: volume 0..21, led_brightness 0..100, retry 5..120 s, timeout 5..60 s");
   f.println("# battery_scale_permille default 2000 means ADC voltage times 2.000");
   f.println("# remote_paired_mac is written by the ESP32-C6 pilot pairing flow");
-  f.print("theme=");
-  f.println(theme().id);
+  f.print("dark_mode=");
+  f.println(darkMode ? 1 : 0);
+  f.print("ap_password=");
+  f.println(apPassword);
   f.print("volume=");
   f.println(volumeLevel);
   f.print("autoplay=");
   f.println(autoPlay ? 1 : 0);
-  f.print("cover_download=");
-  f.println(coverDownload ? 1 : 0);
   f.print("startup_station=");
   if (startupStation < 0) {
     f.println("last");
@@ -3480,7 +3316,7 @@ void startPortal() {
   }
   WiFi.mode(WiFi.status() == WL_CONNECTED ? WIFI_AP_STA : WIFI_AP);
   WiFi.softAPConfig(AP_IP, AP_IP, AP_NETMASK);
-  const bool ok = WiFi.softAP(apName, "radio1234");
+  const bool ok = WiFi.softAP(apName, apPassword.c_str());
   apActive = ok;
   if (ok) {
     dnsServer.start(DNS_PORT, "*", AP_IP);
@@ -3489,7 +3325,7 @@ void startPortal() {
       server.begin();
       portalStarted = true;
     }
-    setStatus("AP %s pass radio1234", apName);
+    setStatus("AP %s pass %s", apName, apPassword.c_str());
     setLedMode(LedMode::Ap);
   } else {
     setStatus("AP start failed");
@@ -3582,9 +3418,15 @@ void handleRoot() {
   html += F("button{background:#1b7f72;border:0;font-weight:700}.danger{background:#b23b3b}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.muted{color:#aab6bd;font-size:.92rem}");
   html += F("textarea{height:190px;font-family:ui-monospace,Consolas,monospace}.card{max-width:760px;margin:auto}");
   html += F("</style></head><body><main class='card'>");
-  html += F("<h1>ESP32 WiFi Radio</h1><p class='muted'>Version 1.0<br>AP: ");
+  html += F("<h1>ESP32 WiFi Radio</h1><p class='muted'>Version ");
+  html += APP_VERSION;
+  html += F("<br>AP: ");
   html += htmlEscape(String(apName));
-  html += F(" / pass: radio1234<br>Network: ");
+  html += F("<br>AP IP: ");
+  html += AP_IP.toString();
+  html += F("<br>AP password: ");
+  html += htmlEscape(apPassword);
+  html += F("<br>Network: ");
   html += htmlEscape(networkText());
   html += F("<br>SD: ");
   html += sdReady ? F("mounted") : F("not mounted");
@@ -3610,25 +3452,15 @@ void handleRoot() {
   html += F("'><input name='pass' placeholder='Password' type='password' value='");
   html += htmlEscape(prefs.getString("pass", ""));
   html += F("'><button>Save WiFi and connect</button></form>");
-  html += F("<h2>Settings</h2><form method='post' action='/settings'><label class='muted'>Theme</label><select name='theme'>");
-  for (uint8_t i = 0; i < THEME_COUNT; i++) {
-    html += F("<option value='");
-    html += THEMES[i].id;
-    html += "'";
-    if (i == themeIndex) {
-      html += F(" selected");
-    }
-    html += F(">");
-    html += THEMES[i].label;
-    html += F("</option>");
-  }
-  html += F("</select><input name='volume' type='number' min='0' max='21' value='");
+  html += F("<h2>Settings</h2><form method='post' action='/settings'><label><input name='darkmode' type='checkbox' style='width:auto' ");
+  html += darkMode ? F("checked") : F("");
+  html += F("> Dark mode</label><label class='muted'>AP password</label><input name='appass' minlength='8' maxlength='63' value='");
+  html += htmlEscape(apPassword);
+  html += F("'><input name='volume' type='number' min='0' max='21' value='");
   html += String(volumeLevel);
   html += F("'><label><input name='autoplay' type='checkbox' style='width:auto' ");
   html += autoPlay ? F("checked") : F("");
-  html += F("> Autoplay after boot</label><br><label><input name='cover' type='checkbox' style='width:auto' ");
-  html += coverDownload ? F("checked") : F("");
-  html += F("> Download BMP covers from stations.csv</label><br><label><input name='startap' type='checkbox' style='width:auto' ");
+  html += F("> Autoplay after boot</label><br><label><input name='startap' type='checkbox' style='width:auto' ");
   html += startApOnBoot ? F("checked") : F("");
   html += F("> Start AP on boot</label><label class='muted'>Startup station</label><input name='startup' value='");
   html += startupStation < 0 ? String("last") : String(startupStation);
@@ -3873,9 +3705,14 @@ void handleNotFound() {
 }
 
 void handleSettingsSave() {
-  const int idx = themeIndexById(server.arg("theme"));
-  if (idx >= 0) {
-    themeIndex = idx;
+  darkMode = server.hasArg("darkmode");
+  if (server.hasArg("appass")) {
+    const bool wasActive = apActive;
+    setApPassword(server.arg("appass"));
+    if (wasActive) {
+      stopPortal();
+      startPortal();
+    }
   }
   if (server.hasArg("volume")) {
     volumeLevel = static_cast<uint8_t>(boundedIntValue(server.arg("volume"), 0, MAX_VOLUME, volumeLevel));
@@ -3883,7 +3720,6 @@ void handleSettingsSave() {
     setEs8311Muted(volumeLevel == 0);
   }
   autoPlay = server.hasArg("autoplay");
-  coverDownload = server.hasArg("cover");
   startApOnBoot = server.hasArg("startap");
   if (server.hasArg("startup")) {
     String startup = server.arg("startup");
@@ -3967,139 +3803,6 @@ void handleSettingsSave() {
   setStatus("Settings saved");
 }
 
-bool downloadCoverToSd(const String &url, const String &path) {
-  if (!sdReady || !coverDownload || WiFi.status() != WL_CONNECTED || !url.length()) {
-    return false;
-  }
-  String lower = url;
-  lower.toLowerCase();
-  if (!lower.startsWith("http://")) {
-    logf("Cover skipped, only plain HTTP BMP is supported: %s", url.c_str());
-    return false;
-  }
-  if (!lower.endsWith(".bmp")) {
-    logf("Cover skipped, only BMP is supported now: %s", url.c_str());
-    return false;
-  }
-  if (SD_MMC.exists(path)) {
-    return true;
-  }
-  if (!SD_MMC.exists(COVERS_DIR)) {
-    SD_MMC.mkdir(COVERS_DIR);
-  }
-
-  String rest = url.substring(7);
-  const int slash = rest.indexOf('/');
-  if (slash <= 0) {
-    return false;
-  }
-  String hostPort = rest.substring(0, slash);
-  String requestPath = rest.substring(slash);
-  uint16_t port = 80;
-  const int colon = hostPort.lastIndexOf(':');
-  if (colon > 0) {
-    port = static_cast<uint16_t>(hostPort.substring(colon + 1).toInt());
-    hostPort = hostPort.substring(0, colon);
-    if (!port) {
-      port = 80;
-    }
-  }
-
-  WiFiClient client;
-  client.setTimeout(3500);
-  if (!client.connect(hostPort.c_str(), port, 2500)) {
-    logf("Cover connect failed: %s", hostPort.c_str());
-    return false;
-  }
-
-  client.print(F("GET "));
-  client.print(requestPath);
-  client.print(F(" HTTP/1.1\r\nHost: "));
-  client.print(hostPort);
-  client.print(F("\r\nUser-Agent: ESP32WiFiRadio/1.0\r\nConnection: close\r\n\r\n"));
-
-  String statusLine = client.readStringUntil('\n');
-  statusLine.trim();
-  if (!statusLine.startsWith("HTTP/1.") || statusLine.indexOf(" 200 ") < 0) {
-    logf("Cover HTTP rejected: %s", statusLine.c_str());
-    client.stop();
-    return false;
-  }
-
-  int contentLength = -1;
-  bool chunked = false;
-  while (client.connected()) {
-    String line = client.readStringUntil('\n');
-    line.trim();
-    if (!line.length()) {
-      break;
-    }
-    String header = line;
-    header.toLowerCase();
-    if (header.startsWith("content-length:")) {
-      contentLength = line.substring(15).toInt();
-    } else if (header.startsWith("transfer-encoding:") && header.indexOf("chunked") >= 0) {
-      chunked = true;
-    }
-  }
-
-  if (chunked) {
-    logf("Cover skipped, chunked HTTP not supported: %s", url.c_str());
-    client.stop();
-    return false;
-  }
-  if (contentLength > 140000) {
-    logf("Cover size rejected: %d", contentLength);
-    client.stop();
-    return false;
-  }
-
-  File f = SD_MMC.open(path, "w");
-  if (!f) {
-    client.stop();
-    return false;
-  }
-
-  uint8_t buffer[512];
-  int written = 0;
-  uint32_t lastDataMs = millis();
-  while ((client.connected() || client.available()) && written < 140000 && millis() - lastDataMs < 3500) {
-    const int available = client.available();
-    if (!available) {
-      delay(5);
-      continue;
-    }
-    const size_t chunk = static_cast<size_t>(available) > sizeof(buffer) ? sizeof(buffer) : static_cast<size_t>(available);
-    const int n = client.readBytes(buffer, chunk);
-    if (n > 0) {
-      f.write(buffer, n);
-      written += n;
-      lastDataMs = millis();
-    }
-    if (contentLength >= 0 && written >= contentLength) {
-      break;
-    }
-  }
-  f.close();
-  client.stop();
-  const bool ok = written > 0 && (contentLength < 0 || written == contentLength) && written <= 140000;
-  logf("Cover %s: %s (%d bytes)", ok ? "saved" : "partial", path.c_str(), written);
-  if (!ok && SD_MMC.exists(path)) {
-    SD_MMC.remove(path);
-  }
-  return ok;
-}
-
-void prepareCoverForStation(int index) {
-  if (index < 0 || index >= stationCount) {
-    return;
-  }
-  if (!stations[index].coverUrl.length()) {
-    return;
-  }
-  downloadCoverToSd(stations[index].coverUrl, stations[index].coverPath);
-}
-
 void startStation(int index) {
   if (stationCount == 0) {
     setStatus("No stations");
@@ -4125,7 +3828,6 @@ void startStation(int index) {
   stopAudio();
   streamTitle[0] = 0;
   metadataDirty = true;
-  prepareCoverForStation(currentStation);
   setStatus("Connecting: %s", stations[currentStation].name.c_str());
   setEs8311Muted(false);
   audio.setVolume(volumeLevel);
@@ -4255,7 +3957,7 @@ void handleMenuTouch(uint16_t x, uint16_t y) {
   } else if (inRect(x, y, 12, 152, 216, 32)) {
     reconnectWifi();
   } else if (inRect(x, y, 12, 192, 216, 32)) {
-    cycleTheme();
+    toggleDarkMode();
   } else if (inRect(x, y, 12, 232, 104, 32)) {
     remoteBeginPairing();
   } else if (inRect(x, y, 124, 232, 104, 32)) {
@@ -4299,7 +4001,7 @@ void processSerialCommand(String cmd) {
     return;
   }
   if (cmd == "help" || cmd == "menu" || cmd == "?") {
-    DEBUG_PORT.println("Commands: help, ap, apoff, reconnect, play, stop, next, prev, reload, saveconfig, theme [name], clearwifi, pairremote, unpairremote, remote, vol N, station N, list, status, unmute, toneon, toneoff, i2slog on/off, codecdebug on/off, codecsummary, codec16, codec32, amp0, amp1, codecdump, reboot");
+    DEBUG_PORT.println("Commands: help, ap, apoff, reconnect, play, stop, next, prev, reload, saveconfig, dark [on/off], clearwifi, pairremote, unpairremote, remote, vol N, station N, list, status, unmute, toneon, toneoff, i2slog on/off, codecdebug on/off, codecsummary, codec16, codec32, amp0, amp1, codecdump, reboot");
   } else if (cmd == "ap") {
     startPortal();
   } else if (cmd == "apoff") {
@@ -4319,23 +4021,14 @@ void processSerialCommand(String cmd) {
   } else if (cmd == "saveconfig") {
     saveRuntimeConfig(true);
     DEBUG_PORT.println("Config saved");
-  } else if (cmd == "theme") {
-    cycleTheme();
-  } else if (cmd.startsWith("theme ")) {
-    const int idx = themeIndexById(cmd.substring(6));
-    if (idx >= 0) {
-      themeIndex = idx;
-      markConfigDirty();
-      setStatus("Theme: %s", theme().label);
-      invalidateUi(true);
-    } else {
-      DEBUG_PORT.print("Themes:");
-      for (uint8_t i = 0; i < THEME_COUNT; i++) {
-        DEBUG_PORT.print(' ');
-        DEBUG_PORT.print(THEMES[i].id);
-      }
-      DEBUG_PORT.println();
-    }
+  } else if (cmd == "dark") {
+    toggleDarkMode();
+  } else if (cmd.startsWith("dark ")) {
+    darkMode = parseBoolValue(cmd.substring(5), darkMode);
+    prefs.putBool("darkMode", darkMode);
+    markConfigDirty();
+    setStatus("Dark mode: %s", darkMode ? "on" : "off");
+    invalidateUi(true);
   } else if (cmd == "clearwifi") {
     clearWifi();
   } else if (cmd == "pairremote" || cmd == "pair" || cmd == "remote pair") {
@@ -4460,11 +4153,11 @@ void printStatus() {
   }
   DEBUG_PORT.println();
   DEBUG_PORT.printf("AP: %s, SD: %s, station: %d/%u\n", apActive ? "on" : "off", sdReady ? "ok" : "missing", currentStation, stationCount);
-  DEBUG_PORT.printf("Config: theme=%s volume=%u autoplay=%d cover=%d startup=%d apBoot=%d retry=%lus timeout=%lus touch=%ums\n",
-                    theme().id,
+  DEBUG_PORT.printf("Config: dark=%d apPassLen=%u volume=%u autoplay=%d startup=%d apBoot=%d retry=%lus timeout=%lus touch=%ums\n",
+                    darkMode ? 1 : 0,
+                    apPassword.length(),
                     volumeLevel,
                     autoPlay ? 1 : 0,
-                    coverDownload ? 1 : 0,
                     startupStation,
                     startApOnBoot ? 1 : 0,
                     wifiRetryMs / 1000UL,

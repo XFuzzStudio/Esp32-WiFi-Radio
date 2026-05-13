@@ -1,6 +1,6 @@
 # ESP-GiF-Player
 
-Version 1.0 LVGL GIF player app for the LCDWiki ESP32-S3 ES3C28P.
+Version 1.1 LVGL GIF player app for the LCDWiki ESP32-S3 ES3C28P.
 
 ## Features
 

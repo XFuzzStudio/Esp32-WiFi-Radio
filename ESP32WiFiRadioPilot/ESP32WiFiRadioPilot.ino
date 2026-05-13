@@ -23,7 +23,7 @@ static constexpr int TOUCH_INT = 21;
 static constexpr int BATTERY_ADC = 0;
 static constexpr uint16_t BATTERY_MIN_MV = 3300;
 static constexpr uint16_t BATTERY_MAX_MV = 4200;
-static constexpr uint16_t BATTERY_SCALE_PERMILLE = 2000;
+static constexpr uint16_t BATTERY_SCALE_PERMILLE = 3000;
 static constexpr uint16_t STATUS_TIMEOUT_MS = 10000;
 static constexpr uint16_t PING_MS = 2000;
 static constexpr uint16_t CHANNEL_SCAN_MS = 350;
@@ -65,6 +65,7 @@ bool uiFullRedraw = true;
 bool uiLayoutDrawn = false;
 bool uiLayoutPaired = false;
 bool lastLinkUi = false;
+bool uiDynamicReset = true;
 bool otaActive = false;
 bool otaRoutesReady = false;
 enum class ScreenMode : uint8_t {
@@ -90,6 +91,20 @@ bool pilotBatteryValid = false;
 uint8_t otaProgressPercent = 0;
 char otaStatus[72] = "OTA idle";
 RadioRemotePacket currentStatus;
+String cachedHeaderMac;
+String cachedWifiKey;
+String cachedRadioBatteryKey;
+String cachedPilotBatteryKey;
+String cachedLinkText;
+String cachedStationText;
+String cachedTitleText;
+String cachedVolumeText;
+String cachedRadioBatteryText;
+String cachedSaverClock;
+String cachedSaverStation;
+String cachedSaverLink;
+String cachedSaverRadioBattery;
+String cachedSaverPilotBattery;
 
 volatile bool touchIntFlag = false;
 struct TouchPoint {
@@ -522,6 +537,14 @@ String clipped(String text, uint8_t chars) {
   return text.substring(0, chars - 3) + "...";
 }
 
+String clippedPlain(String text, uint8_t chars) {
+  text.trim();
+  if (text.length() <= chars) {
+    return text;
+  }
+  return text.substring(0, chars);
+}
+
 void drawText(int16_t x, int16_t y, uint16_t color, uint8_t size, const String &text) {
   gfx->setTextWrap(false);
   gfx->setTextColor(color);
@@ -538,6 +561,10 @@ void drawBattery(int16_t x, int16_t y, uint8_t percent, bool valid) {
   if (valid) {
     gfx->fillRect(x + 2, y + 2, (static_cast<uint16_t>(percent) * 22U) / 100U, 8, color);
   }
+}
+
+String batteryPercentText(uint8_t percent, bool valid) {
+  return valid ? String(percent) + "%" : String("--");
 }
 
 void drawWifi(int16_t x, int16_t y, int8_t bars, bool connected) {
@@ -580,28 +607,76 @@ void drawOtaScreen(uint8_t percent, const char *line, bool error = false) {
   drawText(24, 214, C_MUTED, 1, String(percent) + "%");
 }
 
+void resetSaverCache() {
+  cachedSaverClock = "";
+  cachedSaverStation = "";
+  cachedSaverLink = "";
+  cachedSaverRadioBattery = "";
+  cachedSaverPilotBattery = "";
+}
+
 void drawSaverScreen() {
-  gfx->fillScreen(C_BLACK);
+  if (uiFullRedraw) {
+    gfx->fillScreen(C_BLACK);
+    resetSaverCache();
+    drawText(22, 242, C_MUTED, 1, "Touch to wake");
+  }
+
   const String clock = currentStatus.clock[0] ? String(currentStatus.clock) : String("--:--");
-  gfx->setTextWrap(false);
-  gfx->setTextSize(4);
-  gfx->setTextColor(currentStatus.clock[0] ? C_CARD : C_MUTED);
-  gfx->setCursor((172 - static_cast<int16_t>(clock.length()) * 24) / 2, 58);
-  gfx->print(clock);
+  const String station = clippedPlain(currentStatus.station[0] ? String(currentStatus.station) : String("Radio"), 21);
+  const String link = linkOnline() ? "LINK ONLINE" : (paired ? "RADIO OFFLINE" : "WAITING PAIR");
+  const String radioBattery = batteryPercentText(currentStatus.radioBatteryPercent, currentStatus.radioBatteryValid);
+  const String pilotBattery = batteryPercentText(pilotBatteryPercent, pilotBatteryValid);
 
-  drawText(22, 122, C_BLUE, 1, clipped(currentStatus.station[0] ? String(currentStatus.station) : String("Radio"), 21));
-  drawText(22, 142, linkOnline() ? C_GREEN : C_AMBER, 1, linkOnline() ? "LINK ONLINE" : (paired ? "RADIO OFFLINE" : "WAITING PAIR"));
-
-  drawText(22, 178, C_MUTED, 1, "Radio");
-  drawBattery(72, 174, currentStatus.radioBatteryPercent, currentStatus.radioBatteryValid);
-  drawText(22, 208, C_MUTED, 1, "Pilot");
-  drawBattery(72, 204, pilotBatteryPercent, pilotBatteryValid);
-  drawText(22, 242, C_MUTED, 1, "Touch to wake");
+  if (clock != cachedSaverClock) {
+    gfx->fillRect(0, 54, 172, 36, C_BLACK);
+    gfx->setTextWrap(false);
+    gfx->setTextSize(4);
+    gfx->setTextColor(currentStatus.clock[0] ? C_CARD : C_MUTED);
+    gfx->setCursor((172 - static_cast<int16_t>(clock.length()) * 24) / 2, 58);
+    gfx->print(clock);
+    cachedSaverClock = clock;
+  }
+  if (station != cachedSaverStation) {
+    gfx->fillRect(22, 122, 128, 10, C_BLACK);
+    drawText(22, 122, C_BLUE, 1, station);
+    cachedSaverStation = station;
+  }
+  if (link != cachedSaverLink) {
+    gfx->fillRect(22, 142, 128, 10, C_BLACK);
+    drawText(22, 142, linkOnline() ? C_GREEN : C_AMBER, 1, link);
+    cachedSaverLink = link;
+  }
+  if (radioBattery != cachedSaverRadioBattery) {
+    gfx->fillRect(22, 174, 126, 14, C_BLACK);
+    drawText(22, 178, C_MUTED, 1, "Radio");
+    drawBattery(72, 174, currentStatus.radioBatteryPercent, currentStatus.radioBatteryValid);
+    drawText(106, 178, currentStatus.radioBatteryValid ? C_GREEN : C_MUTED, 1, radioBattery);
+    cachedSaverRadioBattery = radioBattery;
+  }
+  if (pilotBattery != cachedSaverPilotBattery) {
+    gfx->fillRect(22, 204, 126, 14, C_BLACK);
+    drawText(22, 208, C_MUTED, 1, "Pilot");
+    drawBattery(72, 204, pilotBatteryPercent, pilotBatteryValid);
+    drawText(106, 208, pilotBatteryValid ? C_GREEN : C_MUTED, 1, pilotBattery);
+    cachedSaverPilotBattery = pilotBattery;
+  }
   lastSaverRefreshMs = millis();
 }
 
 void drawMainStatic() {
   gfx->fillScreen(C_BG);
+  uiDynamicReset = true;
+  cachedHeaderMac = "";
+  cachedWifiKey = "";
+  cachedRadioBatteryKey = "";
+  cachedPilotBatteryKey = "";
+  cachedLinkText = "";
+  cachedStationText = "";
+  cachedTitleText = "";
+  cachedVolumeText = "";
+  cachedRadioBatteryText = "";
+  resetSaverCache();
   gfx->fillRect(0, 0, 172, 34, C_CARD);
   gfx->drawFastHLine(0, 34, 172, C_LINE);
   drawText(8, 6, C_TEXT, 2, "Radio Pilot");
@@ -625,23 +700,67 @@ void drawMainStatic() {
 }
 
 void drawMainDynamic() {
-  gfx->fillRect(8, 22, 76, 10, C_CARD);
-  gfx->fillRect(86, 6, 24, 18, C_CARD);
-  gfx->fillRect(112, 6, 32, 16, C_CARD);
-  gfx->fillRect(144, 8, 28, 12, C_CARD);
-  drawText(8, 24, C_MUTED, 1, paired ? clipped(macText(radioMac), 17) : "not paired");
-  drawWifi(86, 8, currentStatus.wifiBars, currentStatus.flags & RADIO_REMOTE_FLAG_WIFI_CONNECTED);
-  drawBattery(114, 8, currentStatus.radioBatteryPercent, currentStatus.radioBatteryValid);
-  drawText(146, 10, pilotBatteryValid ? C_GREEN : C_MUTED, 1, pilotBatteryValid ? String(pilotBatteryPercent) + "%" : "--");
+  const String headerMac = paired ? clipped(macText(radioMac), 17) : "not paired";
+  const String wifiKey = String(currentStatus.wifiBars) + ":" + String((currentStatus.flags & RADIO_REMOTE_FLAG_WIFI_CONNECTED) ? 1 : 0);
+  const String radioBatteryKey = String(currentStatus.radioBatteryPercent) + ":" + String(currentStatus.radioBatteryValid);
+  const String pilotBatteryKey = batteryPercentText(pilotBatteryPercent, pilotBatteryValid);
+  const String radioBatteryHeader = String("R") + batteryPercentText(currentStatus.radioBatteryPercent, currentStatus.radioBatteryValid);
+  const String pilotBatteryHeader = String("P") + pilotBatteryKey;
+
+  if (uiDynamicReset || headerMac != cachedHeaderMac) {
+    gfx->fillRect(8, 22, 76, 10, C_CARD);
+    drawText(8, 24, C_MUTED, 1, headerMac);
+    cachedHeaderMac = headerMac;
+  }
+  if (uiDynamicReset || wifiKey != cachedWifiKey) {
+    gfx->fillRect(86, 6, 24, 18, C_CARD);
+    drawWifi(86, 8, currentStatus.wifiBars, currentStatus.flags & RADIO_REMOTE_FLAG_WIFI_CONNECTED);
+    cachedWifiKey = wifiKey;
+  }
+  if (uiDynamicReset || radioBatteryKey != cachedRadioBatteryKey || pilotBatteryKey != cachedPilotBatteryKey) {
+    gfx->fillRect(110, 6, 62, 16, C_CARD);
+    drawText(112, 10, currentStatus.radioBatteryValid ? C_GREEN : C_MUTED, 1, radioBatteryHeader);
+    drawText(142, 10, pilotBatteryValid ? C_GREEN : C_MUTED, 1, pilotBatteryHeader);
+    cachedRadioBatteryKey = radioBatteryKey;
+    cachedPilotBatteryKey = pilotBatteryKey;
+  }
 
   const bool online = linkOnline();
-  gfx->fillRect(14, 54, 148, 104, C_CARD);
-  drawText(18, 58, online ? C_GREEN : C_AMBER, 1, online ? "LINK ONLINE" : (paired ? "RADIO OFFLINE" : "WAITING PAIR"));
-  drawText(18, 78, C_BLUE, 2, clipped(currentStatus.station[0] ? String(currentStatus.station) : String("Radio"), 11));
-  drawText(18, 104, C_TEXT, 1, clipped(currentStatus.title[0] ? String(currentStatus.title) : String("Enable Pair Pilot"), 24));
-  drawText(18, 126, C_MUTED, 1, String("Vol ") + String(currentStatus.volume) + "  Ch " + String(radioChannel));
-  drawText(18, 142, C_MUTED, 1, String("Radio bat ") + (currentStatus.radioBatteryValid ? String(currentStatus.radioBatteryPercent) + "%" : String("--")));
-  drawSmallButton(122, 132, 36, 22, "OTA", C_CARD, C_BLUE);
+  const String linkText = online ? "LINK ONLINE" : (paired ? "RADIO OFFLINE" : "WAITING PAIR");
+  const String stationText = clippedPlain(currentStatus.station[0] ? String(currentStatus.station) : String("Radio"), 11);
+  const String titleText = clippedPlain(currentStatus.title[0] ? String(currentStatus.title) : String("Enable Pair Pilot"), 24);
+  const String volumeText = String("Vol ") + String(currentStatus.volume) + "  Ch " + String(radioChannel);
+  const String radioBatteryText = String("Radio bat ") + (currentStatus.radioBatteryValid ? String(currentStatus.radioBatteryPercent) + "%" : String("--"));
+
+  if (uiDynamicReset || linkText != cachedLinkText) {
+    gfx->fillRect(18, 58, 136, 10, C_CARD);
+    drawText(18, 58, online ? C_GREEN : C_AMBER, 1, linkText);
+    cachedLinkText = linkText;
+  }
+  if (uiDynamicReset || stationText != cachedStationText) {
+    gfx->fillRect(18, 78, 132, 18, C_CARD);
+    drawText(18, 78, C_BLUE, 2, stationText);
+    cachedStationText = stationText;
+  }
+  if (uiDynamicReset || titleText != cachedTitleText) {
+    gfx->fillRect(18, 104, 136, 10, C_CARD);
+    drawText(18, 104, C_TEXT, 1, titleText);
+    cachedTitleText = titleText;
+  }
+  if (uiDynamicReset || volumeText != cachedVolumeText) {
+    gfx->fillRect(18, 126, 136, 10, C_CARD);
+    drawText(18, 126, C_MUTED, 1, volumeText);
+    cachedVolumeText = volumeText;
+  }
+  if (uiDynamicReset || radioBatteryText != cachedRadioBatteryText) {
+    gfx->fillRect(18, 142, 96, 10, C_CARD);
+    drawText(18, 142, C_MUTED, 1, radioBatteryText);
+    cachedRadioBatteryText = radioBatteryText;
+  }
+  if (uiDynamicReset) {
+    drawSmallButton(122, 132, 36, 22, "OTA", C_CARD, C_BLUE);
+    uiDynamicReset = false;
+  }
 }
 
 void drawUi() {

@@ -13,7 +13,7 @@
 #include "../shared/lcdwiki_es3c28p/touch_ft6336.h"
 
 static constexpr char APP_NAME[] = "ESP-GiF-Player";
-static constexpr char APP_VERSION[] = "1.0";
+static constexpr char APP_VERSION[] = "1.1";
 static constexpr char DATA_DIR[] = "/apps_data/ESP-GiF-Player";
 static constexpr char GIF_DIR[] = "/apps_data/ESP-GiF-Player/gifs";
 static constexpr char UPLOAD_DIR[] = "/apps_data/ESP-GiF-Player/uploads";
@@ -234,7 +234,7 @@ void buildUi() {
   root = lv_screen_active();
   lv_obj_clean(root);
   titleLbl = lv_label_create(root);
-  lv_label_set_text(titleLbl, "ESP-GiF-Player 1.0");
+  lv_label_set_text(titleLbl, "ESP-GiF-Player 1.1");
   lv_obj_set_pos(titleLbl, 8, 6);
   statusLbl = lv_label_create(root);
   lv_obj_set_pos(statusLbl, 8, 28);
@@ -259,7 +259,7 @@ void startAp() {
 
 void rootPage() {
   String h = "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><style>body{font-family:system-ui;background:#101820;color:#edf;margin:20px}button,input{width:100%;padding:10px;margin:5px 0}li{margin:8px 0}</style>";
-  h += "<h1>ESP-GiF-Player 1.0</h1><p>" + esc(statusText) + "</p>";
+  h += "<h1>ESP-GiF-Player 1.1</h1><p>" + esc(statusText) + "</p>";
   h += "<form method=post action=/upload enctype=multipart/form-data><input type=file name=file accept='.gif,image/gif'><button>Upload GIF</button></form>";
   h += "<form method=post action=/refresh><button>Refresh list</button></form><ol>";
   for (int i = 0; i < gifCount; i++) {

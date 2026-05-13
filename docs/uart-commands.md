@@ -35,8 +35,9 @@ prev
 station N
 list
 vol N
-theme
-theme NAME
+dark
+dark on
+dark off
 unmute
 toneon
 toneoff

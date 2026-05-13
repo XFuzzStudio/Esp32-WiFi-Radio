@@ -13,10 +13,11 @@
 #include "../shared/lcdwiki_es3c28p/touch_ft6336.h"
 
 static constexpr char APP_NAME[] = "ESP-WiFi-Scanner";
-static constexpr char APP_VERSION[] = "1.0";
+static constexpr char APP_VERSION[] = "1.1";
 static constexpr char DATA_DIR[] = "/apps_data/ESP-WiFi-Scanner";
 static constexpr char LOG_DIR[] = "/apps_data/ESP-WiFi-Scanner/logs";
 static constexpr char LOG_FILE[] = "/apps_data/ESP-WiFi-Scanner/logs/scanner.log";
+static constexpr char WIFI_CREDS_FILE[] = "/apps_data/ESP-WiFi-Scanner/wifi_creds.csv";
 static constexpr uint16_t W = LCDWIKI_ES3C28P_SCREEN_WIDTH;
 static constexpr uint16_t H = LCDWIKI_ES3C28P_SCREEN_HEIGHT;
 static constexpr uint8_t LV_ROWS = 32;
@@ -29,8 +30,9 @@ DNSServer dns;
 lv_display_t *lvDisp = nullptr;
 lv_indev_t *lvInput = nullptr;
 lv_obj_t *root = nullptr;
-lv_obj_t *titleLbl = nullptr;
 lv_obj_t *statusLbl = nullptr;
+lv_obj_t *busySpinner = nullptr;
+lv_obj_t *bodyBox = nullptr;
 lv_obj_t *bodyLbl = nullptr;
 lv_obj_t *logBtn = nullptr;
 lv_obj_t *ssidTa = nullptr;
@@ -42,11 +44,90 @@ bool sdReady = false;
 bool dataReady = false;
 bool apActive = false;
 bool loggingEnabled = false;
+bool busy = false;
+bool wifiSelectionActive = false;
 String lastLog = "Starting";
 String wifiText;
 String hostText;
 String portText;
 IPAddress selectedHost;
+String scannedSsids[12];
+int scannedWifiCount = 0;
+
+void syncBody();
+void updateHeaderStatus();
+void setBusy(bool value);
+
+String csvEscape(String s) {
+  s.replace("\\", "\\\\");
+  s.replace("|", "\\|");
+  s.replace("\n", " ");
+  return s;
+}
+
+String csvUnescape(String s) {
+  String out;
+  bool escNext = false;
+  for (uint16_t i = 0; i < s.length(); i++) {
+    const char c = s[i];
+    if (escNext) {
+      out += c;
+      escNext = false;
+    } else if (c == '\\') {
+      escNext = true;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+String savedPasswordFor(const String &ssid) {
+  if (!sdReady || !dataReady || !SD_MMC.exists(WIFI_CREDS_FILE)) return "";
+  File f = SD_MMC.open(WIFI_CREDS_FILE, FILE_READ);
+  if (!f) return "";
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (!line.length() || line.startsWith("#")) continue;
+    const int sep = line.indexOf('|');
+    if (sep <= 0) continue;
+    if (csvUnescape(line.substring(0, sep)) == ssid) {
+      String pass = csvUnescape(line.substring(sep + 1));
+      f.close();
+      return pass;
+    }
+  }
+  f.close();
+  return "";
+}
+
+void saveWifiCredential(const String &ssid, const String &pass) {
+  if (!sdReady || !dataReady || !ssid.length()) return;
+  String existing;
+  if (SD_MMC.exists(WIFI_CREDS_FILE)) {
+    File in = SD_MMC.open(WIFI_CREDS_FILE, FILE_READ);
+    if (in) {
+      while (in.available()) {
+        String line = in.readStringUntil('\n');
+        String trimmed = line;
+        trimmed.trim();
+        const int sep = trimmed.indexOf('|');
+        if (sep > 0 && csvUnescape(trimmed.substring(0, sep)) == ssid) continue;
+        existing += line;
+        if (!existing.endsWith("\n")) existing += "\n";
+      }
+      in.close();
+    }
+  }
+  File out = SD_MMC.open(WIFI_CREDS_FILE, "w");
+  if (!out) return;
+  out.print(existing);
+  out.print(csvEscape(ssid));
+  out.print("|");
+  out.println(csvEscape(pass));
+  out.close();
+}
 
 void logLine(const char *fmt, ...) {
   char buf[192];
@@ -63,7 +144,36 @@ void logLine(const char *fmt, ...) {
       f.close();
     }
   }
-  if (statusLbl) lv_label_set_text(statusLbl, lastLog.c_str());
+  if (bodyLbl) syncBody();
+}
+
+String wifiHeaderText() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return String("WiFi ") + WiFi.SSID() + "  " + WiFi.localIP().toString();
+  }
+  if (apActive) {
+    return String("AP ") + WiFi.softAPIP().toString();
+  }
+  return "WiFi not connected";
+}
+
+void updateHeaderStatus() {
+  if (statusLbl) {
+    lv_label_set_text(statusLbl, wifiHeaderText().c_str());
+  }
+}
+
+void setBusy(bool value) {
+  busy = value;
+  if (busySpinner) {
+    if (busy) {
+      lv_obj_clear_flag(busySpinner, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(busySpinner, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+  updateHeaderStatus();
+  lv_timer_handler();
 }
 
 String esc(String s) {
@@ -90,6 +200,13 @@ void initSd() {
     if (!SD_MMC.exists(DATA_DIR)) SD_MMC.mkdir(DATA_DIR);
     if (!SD_MMC.exists(LOG_DIR)) SD_MMC.mkdir(LOG_DIR);
     dataReady = SD_MMC.exists(LOG_DIR);
+    if (dataReady && !SD_MMC.exists(WIFI_CREDS_FILE)) {
+      File f = SD_MMC.open(WIFI_CREDS_FILE, "w");
+      if (f) {
+        f.println("# ssid|password");
+        f.close();
+      }
+    }
   }
 }
 
@@ -121,7 +238,19 @@ lv_obj_t *btn(const char *t, int x, int y, int w, int h, lv_event_cb_t cb) {
 }
 
 void syncBody() {
-  String s = String("Log: ") + (loggingEnabled ? "ON" : "OFF") + "\nWiFi:\n" + wifiText + "\nHosts:\n" + hostText + "\nPorts:\n" + portText;
+  String s = String("Log: ") + lastLog + "\n";
+  if (wifiSelectionActive) {
+    s += "Tap WiFi row to select:\n";
+    s += wifiText.length() ? wifiText : "No WiFi scan yet";
+  } else if (hostText.length()) {
+    s += hostText;
+  } else if (portText.length()) {
+    s += portText;
+  } else if (wifiText.length()) {
+    s += wifiText;
+  } else {
+    s += "Ready";
+  }
   if (!dataReady) s = String("ERROR: SD card or ") + DATA_DIR + " missing.\nThis app requires SD logs folder.";
   lv_label_set_text(bodyLbl, s.c_str());
 }
@@ -140,16 +269,27 @@ void toggleLogging() {
 }
 
 void scanWifi() {
+  setBusy(true);
+  wifiSelectionActive = true;
   wifiText = "";
+  hostText = "";
+  portText = "";
+  scannedWifiCount = 0;
   int n = WiFi.scanNetworks(false, true);
   for (int i = 0; i < n && i < 12; i++) {
-    wifiText += String(i) + ": " + WiFi.SSID(i) + " " + WiFi.RSSI(i) + "dBm\n";
+    scannedSsids[scannedWifiCount++] = WiFi.SSID(i);
+    wifiText += String(i) + ": " + WiFi.SSID(i) + " " + WiFi.RSSI(i) + "dBm";
+    if (savedPasswordFor(WiFi.SSID(i)).length()) wifiText += " saved";
+    wifiText += "\n";
   }
   logLine("WiFi scan: %d networks", n);
   syncBody();
+  setBusy(false);
 }
 
 void connectFromFields() {
+  setBusy(true);
+  wifiSelectionActive = false;
   String ssid = lv_textarea_get_text(ssidTa);
   String pass = lv_textarea_get_text(passTa);
   WiFi.mode(WIFI_AP_STA);
@@ -159,9 +299,16 @@ void connectFromFields() {
     lv_timer_handler();
     delay(50);
   }
-  wifiText = WiFi.status() == WL_CONNECTED ? String("Connected ") + WiFi.localIP().toString() + " RSSI " + WiFi.RSSI() : "Connect failed";
+  if (WiFi.status() == WL_CONNECTED) {
+    saveWifiCredential(ssid, pass);
+    wifiText = String("Connected ") + WiFi.localIP().toString() + " RSSI " + WiFi.RSSI();
+  } else {
+    wifiText = "Connect failed";
+  }
   logLine("%s", wifiText.c_str());
+  updateHeaderStatus();
   syncBody();
+  setBusy(false);
 }
 
 bool tcpProbe(IPAddress ip, uint16_t port, uint16_t timeoutMs) {
@@ -173,10 +320,14 @@ bool tcpProbe(IPAddress ip, uint16_t port, uint16_t timeoutMs) {
 }
 
 void scanHosts() {
+  setBusy(true);
+  wifiSelectionActive = false;
   hostText = "";
+  portText = "";
   if (WiFi.status() != WL_CONNECTED) {
     hostText = "No STA connection";
     syncBody();
+    setBusy(false);
     return;
   }
   IPAddress base = WiFi.localIP();
@@ -189,11 +340,13 @@ void scanHosts() {
       hostText += ip.toString() + "\n";
       found++;
       syncBody();
+      lv_timer_handler();
     }
     delay(1);
   }
   logLine("Host scan done: %u live hosts", found);
   syncBody();
+  setBusy(false);
 }
 
 void appendPort(uint16_t p) {
@@ -205,6 +358,9 @@ void appendPort(uint16_t p) {
 }
 
 void scanPorts() {
+  setBusy(true);
+  wifiSelectionActive = false;
+  hostText = "";
   portText = String("Target ") + (selectedHost ? selectedHost.toString() : WiFi.gatewayIP().toString()) + "\n";
   String custom = lv_textarea_get_text(portsTa);
   custom.trim();
@@ -222,6 +378,7 @@ void scanPorts() {
   }
   logLine("Port scan done");
   syncBody();
+  setBusy(false);
 }
 
 void startAp() {
@@ -234,7 +391,7 @@ void startAp() {
 
 void rootPage() {
   String h = "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><style>body{font-family:system-ui;background:#101820;color:#edf;margin:20px}button,input{width:100%;padding:10px;margin:5px 0}pre{white-space:pre-wrap;background:#17222b;padding:12px}</style>";
-  h += "<h1>ESP-WiFi-Scanner 1.0</h1><p>" + esc(lastLog) + "</p>";
+  h += "<h1>Network tools 1.1</h1><p>" + esc(wifiHeaderText()) + "</p><p>" + esc(lastLog) + "</p>";
   h += String("<p>Logging: ") + (loggingEnabled ? "ON" : "OFF") + "</p><form method=post action=/logtoggle><button>Toggle scan log</button></form>";
   h += "<form method=post action=/wifi><input name=ssid placeholder=SSID><input name=pass placeholder=Password type=password><button>Connect</button></form>";
   h += "<form method=post action=/scanwifi><button>Scan WiFi</button></form><form method=post action=/scanhosts><button>Scan Hosts</button></form>";
@@ -245,7 +402,7 @@ void rootPage() {
 
 void setupRoutes() {
   server.on("/", rootPage);
-  server.on("/wifi", HTTP_POST, [](){ WiFi.mode(WIFI_AP_STA); WiFi.begin(server.arg("ssid").c_str(), server.arg("pass").c_str()); server.sendHeader("Location","/"); server.send(302); });
+  server.on("/wifi", HTTP_POST, [](){ String ssid=server.arg("ssid"); String pass=server.arg("pass"); WiFi.mode(WIFI_AP_STA); WiFi.begin(ssid.c_str(), pass.c_str()); saveWifiCredential(ssid, pass); server.sendHeader("Location","/"); server.send(302); });
   server.on("/scanwifi", HTTP_POST, [](){ scanWifi(); server.sendHeader("Location","/"); server.send(302); });
   server.on("/scanhosts", HTTP_POST, [](){ scanHosts(); server.sendHeader("Location","/"); server.send(302); });
   server.on("/scanports", HTTP_POST, [](){ if (server.hasArg("ports")) lv_textarea_set_text(portsTa, server.arg("ports").c_str()); scanPorts(); server.sendHeader("Location","/"); server.send(302); });
@@ -259,44 +416,101 @@ void focusCb(lv_event_t *e) {
   lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
 }
 
+void hideKeyboard() {
+  if (!kb) return;
+  lv_keyboard_set_textarea(kb, nullptr);
+  lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+void rootClickCb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  lv_obj_t *target = static_cast<lv_obj_t *>(lv_event_get_target(e));
+  if (target == root || target == bodyBox || target == bodyLbl) {
+    hideKeyboard();
+  }
+}
+
+void outputClickCb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED || !wifiSelectionActive || scannedWifiCount <= 0) return;
+  lv_point_t p;
+  lv_indev_get_point(lv_indev_active(), &p);
+  lv_area_t a;
+  lv_obj_get_coords(bodyBox, &a);
+  const int line = ((p.y - a.y1) + lv_obj_get_scroll_y(bodyBox)) / 16;
+  const int wifiIndex = line - 2;
+  if (wifiIndex >= 0 && wifiIndex < scannedWifiCount) {
+    const String ssid = scannedSsids[wifiIndex];
+    lv_textarea_set_text(ssidTa, ssid.c_str());
+    String pass = savedPasswordFor(ssid);
+    if (pass.length()) {
+      lv_textarea_set_text(passTa, pass.c_str());
+      logLine("Selected saved WiFi: %s", ssid.c_str());
+    } else {
+      lv_textarea_set_text(passTa, "");
+      logLine("Selected WiFi: %s", ssid.c_str());
+    }
+  }
+}
+
+void setupTextArea(lv_obj_t *ta) {
+  lv_textarea_set_one_line(ta, true);
+  lv_textarea_set_cursor_click_pos(ta, true);
+  lv_obj_clear_flag(ta, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(ta, focusCb, LV_EVENT_FOCUSED, nullptr);
+}
+
 void buildUi() {
   root = lv_screen_active();
   lv_obj_clean(root);
-  titleLbl = lv_label_create(root);
-  lv_label_set_text(titleLbl, "ESP-WiFi-Scanner 1.0");
-  lv_obj_set_pos(titleLbl, 8, 6);
+  lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(root, rootClickCb, LV_EVENT_CLICKED, nullptr);
   statusLbl = lv_label_create(root);
-  lv_obj_set_pos(statusLbl, 8, 26);
-  lv_obj_set_width(statusLbl, 224);
+  lv_obj_set_pos(statusLbl, 8, 8);
+  lv_obj_set_width(statusLbl, 194);
+  lv_label_set_long_mode(statusLbl, LV_LABEL_LONG_DOT);
+  busySpinner = lv_spinner_create(root);
+  lv_obj_set_pos(busySpinner, 210, 6);
+  lv_obj_set_size(busySpinner, 22, 22);
+  lv_obj_add_flag(busySpinner, LV_OBJ_FLAG_HIDDEN);
   ssidTa = lv_textarea_create(root);
-  lv_obj_set_pos(ssidTa, 8, 48);
+  lv_obj_set_pos(ssidTa, 8, 34);
   lv_obj_set_size(ssidTa, 108, 30);
   lv_textarea_set_placeholder_text(ssidTa, "SSID");
-  lv_obj_add_event_cb(ssidTa, focusCb, LV_EVENT_FOCUSED, nullptr);
+  setupTextArea(ssidTa);
   passTa = lv_textarea_create(root);
-  lv_obj_set_pos(passTa, 124, 48);
+  lv_obj_set_pos(passTa, 124, 34);
   lv_obj_set_size(passTa, 108, 30);
   lv_textarea_set_password_mode(passTa, true);
   lv_textarea_set_placeholder_text(passTa, "Pass");
-  lv_obj_add_event_cb(passTa, focusCb, LV_EVENT_FOCUSED, nullptr);
+  setupTextArea(passTa);
   portsTa = lv_textarea_create(root);
-  lv_obj_set_pos(portsTa, 8, 84);
+  lv_obj_set_pos(portsTa, 8, 70);
   lv_obj_set_size(portsTa, 224, 30);
   lv_textarea_set_placeholder_text(portsTa, "Ports CSV or blank");
-  lv_obj_add_event_cb(portsTa, focusCb, LV_EVENT_FOCUSED, nullptr);
-  btn("WiFi", 8, 120, 52, 30, [](lv_event_t *){ scanWifi(); });
-  btn("Conn", 64, 120, 52, 30, [](lv_event_t *){ connectFromFields(); });
-  btn("Hosts", 120, 120, 52, 30, [](lv_event_t *){ scanHosts(); });
-  btn("Ports", 176, 120, 56, 30, [](lv_event_t *){ scanPorts(); });
-  logBtn = btn("Log OFF", 8, 154, 224, 26, [](lv_event_t *){ toggleLogging(); });
-  bodyLbl = lv_label_create(root);
-  lv_obj_set_pos(bodyLbl, 8, 184);
-  lv_obj_set_size(bodyLbl, 224, 70);
-  lv_label_set_long_mode(bodyLbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  setupTextArea(portsTa);
+  btn("WiFi", 8, 106, 52, 30, [](lv_event_t *){ scanWifi(); });
+  btn("Conn", 64, 106, 52, 30, [](lv_event_t *){ connectFromFields(); });
+  btn("Hosts", 120, 106, 52, 30, [](lv_event_t *){ scanHosts(); });
+  btn("Ports", 176, 106, 56, 30, [](lv_event_t *){ scanPorts(); });
+  logBtn = btn("Log OFF", 8, 142, 224, 24, [](lv_event_t *){ toggleLogging(); });
+  bodyBox = lv_obj_create(root);
+  lv_obj_set_pos(bodyBox, 8, 172);
+  lv_obj_set_size(bodyBox, 224, 140);
+  lv_obj_set_scroll_dir(bodyBox, LV_DIR_VER);
+  lv_obj_add_flag(bodyBox, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(bodyBox, rootClickCb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(bodyBox, outputClickCb, LV_EVENT_CLICKED, nullptr);
+  bodyLbl = lv_label_create(bodyBox);
+  lv_obj_set_width(bodyLbl, 204);
+  lv_label_set_long_mode(bodyLbl, LV_LABEL_LONG_WRAP);
+  lv_obj_add_flag(bodyLbl, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(bodyLbl, rootClickCb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(bodyLbl, outputClickCb, LV_EVENT_CLICKED, nullptr);
   kb = lv_keyboard_create(root);
   lv_obj_set_size(kb, 240, 108);
   lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+  updateHeaderStatus();
   syncBody();
 }
 
@@ -319,6 +533,7 @@ void setup() {
   setupRoutes();
   server.begin();
   logLine("%s %s AP %s", APP_NAME, APP_VERSION, WiFi.softAPIP().toString().c_str());
+  updateHeaderStatus();
 }
 
 void loop() {
@@ -326,5 +541,6 @@ void loop() {
   lv_timer_handler();
   server.handleClient();
   if (apActive) dns.processNextRequest();
+  updateHeaderStatus();
   delay(5);
 }

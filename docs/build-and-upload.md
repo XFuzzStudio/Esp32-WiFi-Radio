@@ -9,11 +9,30 @@ $fqbnC6 = "esp32:esp32:esp32c6:FlashSize=8M,PartitionScheme=default_8MB"
 $fqbnLoader = "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,USBMode=hwcdc,CDCOnBoot=default"
 ```
 
-To build every project with all available CPU threads and copy app `.bin` files
-for the loader:
+To build every project and copy app `.bin` files for the loader, use the
+progress-enabled build script. It shows a live PowerShell progress bar while
+each sketch compiles. On the i7-6600U it defaults to 3 compile jobs so Windows
+keeps one logical thread free for USB/driver interrupts and the desktop:
 
 ```powershell
 .\scripts\build-all.ps1
+```
+
+Fast incremental rebuild of only one sketch:
+
+```powershell
+.\scripts\build-all.ps1 -Sketch ESP32WiFiRadio
+.\scripts\build-all.ps1 -Sketch ESP-WiFi-Scanner
+.\scripts\build-all.ps1 -Sketch ESP32WiFiRadioPilot
+```
+
+For a full clean rebuild, add `-Clean`. If the machine is stable and cool, you
+can force all four logical threads with `-Jobs 4`, but `-Jobs 3` is usually
+faster in practice on this laptop because it avoids heavy UI/USB stalls.
+
+```powershell
+.\scripts\build-all.ps1 -Clean
+.\scripts\build-all.ps1 -Sketch ESP32WiFiRadio -Jobs 4
 ```
 
 ## ESP32 WiFi Radio

@@ -1,6 +1,6 @@
 # ESP32 WiFi Radio
 
-Version 1.0 firmware set for the LCDWiki 2.8 inch ESP32-S3 ES3C28P board and a
+Version 1.1 firmware set for the LCDWiki 2.8 inch ESP32-S3 ES3C28P board and a
 Waveshare ESP32-C6 touch remote.
 
 The official radio firmware is the LVGL build in `ESP32WiFiRadio/`. Extra
@@ -26,7 +26,7 @@ loader apps use the same LCDWiki ESP32-S3 target and run from `ESP32BinLoader`.
 
 ## Radio Features
 
-- LVGL 9 touch UI with loading animation, themes, station list, and controls.
+- LVGL 9 touch UI with loading animation, dark mode, scrollable station list, and controls.
 - ES8311 codec and I2S audio streaming through `ESP32-audioI2S-master`.
 - SD-first station/config storage with setup AP when Wi-Fi is missing.
 - Web UI for Wi-Fi, stations, config, diagnostics, ESP-NOW pairing, and OTA.
@@ -71,6 +71,8 @@ $fqbnC6 = "esp32:esp32:esp32c6:FlashSize=8M,PartitionScheme=default_8MB"
 - [Build and upload](docs/build-and-upload.md)
 - [SD card files](docs/sd-card.md)
 - [Versioning](docs/versioning.md)
+- [Release workflow](docs/release-workflow.md)
+- [Security notes](docs/security.md)
 - [ESP32 WiFi Radio Pilot](docs/radio-pilot.md)
 - [ESP32 Bin Loader](docs/esp32-bin-loader.md)
 - [UART commands](docs/uart-commands.md)

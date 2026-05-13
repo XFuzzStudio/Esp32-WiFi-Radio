@@ -2,7 +2,7 @@
 
 Use this before tagging a public release.
 
-## Version 1.0 Scope
+## Version 1.1 Scope
 
 - `ESP32WiFiRadio/` is the official radio firmware.
 - `ESP-WiFi-Scanner/` is the official scanner utility app.
@@ -18,6 +18,7 @@ Use this before tagging a public release.
 - Confirm `LICENSE` and `LICENSES.md` are present.
 - Confirm `sd_card/apps_data/ESP32WiFiRadio/radio.cfg` has blank `wifi_ssid=`
   and `wifi_password=`.
+- Confirm `sd_card/apps_data/ESP-WiFi-Scanner/wifi_creds.csv` is not present.
 - Do not commit private SD card dumps, Wi-Fi credentials, local logs, or built
   `.bin` files.
 
@@ -46,8 +47,8 @@ Optional hardware smoke test:
 ```powershell
 git status
 git add .
-git commit -m "Release ESP32 WiFi Radio 1.0"
-git tag -a v1.0 -m "ESP32 WiFi Radio 1.0"
+git commit -m "Release ESP32 WiFi Radio 1.1"
+git tag -a v1.1 -m "ESP32 WiFi Radio 1.1"
 git push origin main
-git push origin v1.0
+git push origin v1.1
 ```

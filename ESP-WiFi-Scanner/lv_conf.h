@@ -11,6 +11,7 @@
 #define LV_USE_LABEL 1
 #define LV_USE_BUTTON 1
 #define LV_USE_BAR 1
+#define LV_USE_SPINNER 1
 #define LV_USE_TEXTAREA 1
 #define LV_USE_KEYBOARD 1
 #define LV_FONT_MONTSERRAT_14 1

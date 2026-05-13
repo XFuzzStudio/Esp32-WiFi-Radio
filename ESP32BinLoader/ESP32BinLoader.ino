@@ -189,7 +189,7 @@ void initDebug() {
   Serial0.begin(115200, SERIAL_8N1, DEBUG_UART_RX, DEBUG_UART_TX);
   delay(100);
   Serial0.println();
-  Serial0.println("ESP32 Bin Loader 1.0");
+  Serial0.println("ESP32 Bin Loader 1.1");
 }
 
 void setStatus(const char *fmt, ...) {

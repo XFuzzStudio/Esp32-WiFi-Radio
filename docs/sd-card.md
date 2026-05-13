@@ -14,7 +14,6 @@ Copy the sample files from `sd_card/` to the root of the microSD card:
   ESP32WiFiRadio/
     radio.cfg
     stations.csv
-    covers/
   ESP-WiFi-Scanner/
     logs/
   ESP-GiF-Player/
@@ -32,10 +31,14 @@ shows an error instead of silently using root-card files.
 ```text
 wifi_ssid=
 wifi_password=
+ap_password=radio1234
 ```
 
 Fill those values on your own SD card, or leave them blank and use the setup AP
 at `http://192.168.4.1`.
+
+The radio setup AP password can be changed with `ap_password=` or from the web
+GUI. Keep private SD card copies with real Wi-Fi credentials out of Git.
 
 For the ESP32-C6 pilot link, the radio writes `remote_paired_mac=` into
 `/apps_data/ESP32WiFiRadio/radio.cfg` during pairing. Leave that value empty in
@@ -46,11 +49,8 @@ a fresh SD image.
 Station rows use this format:
 
 ```text
-Station name|stream_url|optional_cover_bmp_url
+Station name|stream_url
 ```
-
-The third field is optional. Cover downloading expects small plain `http://` BMP
-files. If cover art is missing or invalid, the UI draws a station badge.
 
 The radio loads up to 50 station rows.
 
@@ -78,3 +78,7 @@ Do not use merged firmware images in `/apps`; use the sketch app `.bin`.
 
 Do not commit a real SD card dump with private Wi-Fi credentials. Keep private
 copies in a folder ignored by git, such as `sd_private/`.
+
+The scanner can create `/apps_data/ESP-WiFi-Scanner/wifi_creds.csv` on the SD
+card after successful Wi-Fi connections. That file contains saved Wi-Fi
+passwords in plain text and is ignored by Git.

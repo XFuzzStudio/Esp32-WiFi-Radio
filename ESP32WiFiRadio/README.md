@@ -19,7 +19,7 @@ Official LVGL 9 internet radio firmware for the LCDWiki ESP32-S3 ES3C28P board.
 `/apps_data/ESP32WiFiRadio/stations.csv`:
 
 ```text
-Station name|stream_url|optional_cover_bmp_url
+Station name|stream_url
 ```
 
 `/apps_data/ESP32WiFiRadio/radio.cfg` stores runtime settings. The sample in
@@ -36,8 +36,9 @@ Important safe ranges are enforced by firmware:
 - touch debounce: `80..800` ms
 - LED brightness: `0..100`
 
-Themes: `ocean`, `forest`, `sunset`, `mono`, `aurora`, `ember`, `berry`, `ice`,
-`mint`, `plum`, `steel`, `amber`, `neon`, `wine`.
+Display mode: `dark_mode=1` enables the dark LVGL UI; set `dark_mode=0` for the
+light UI. The setup AP password is stored as `ap_password=` and can be changed
+from the web GUI.
 
 LED effects: `off`, `solid`, `breathe`, `blink`, `vu`.
 
