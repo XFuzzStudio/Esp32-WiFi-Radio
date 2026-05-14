@@ -12,10 +12,13 @@ Version 1.1 LVGL network utility app for the LCDWiki ESP32-S3 ES3C28P.
 - Header space is dedicated to current Wi-Fi/AP state, selected SSID, and IP.
 - Scans the local subnet for live hosts using fast TCP probes.
 - Scans popular ports or a custom comma-separated port list.
-- Results are shown in a larger touch-scrollable output panel; Wi-Fi row
-  selection is active only immediately after Wi-Fi scans.
+- Results are shown in a larger touch-scrollable output panel; Wi-Fi scan
+  results become real scrollable row buttons, so row selection follows the
+  visible scrolled list.
 - A top-right animated activity dot is shown while Wi-Fi, host, or port scans
   are running.
+- The onboard RGB LED turns blue while Wi-Fi, host, port, or connection work is
+  in progress.
 - The display and LVGL UI start before SD/AP initialization, so startup status is
   visible even if SD mounting is slow.
 - Writes scan logs to `/apps_data/ESP-WiFi-Scanner/logs/scanner.log` only when

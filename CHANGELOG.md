@@ -27,6 +27,7 @@
 - Added a top-right scanner activity indicator while Wi-Fi, host, or port scans are running.
 - Starts the scanner display/UI before SD and AP initialization to avoid a black screen during slow startup.
 - Restored the scanner busy indicator as a lightweight animated dot and fixed Wi-Fi row selection after output scrolling.
+- Rebuilt Wi-Fi scan results as real scrollable LVGL row buttons and added the onboard RGB LED as a busy indicator.
 - Saves scanner Wi-Fi passwords locally on SD in `/apps_data/ESP-WiFi-Scanner/wifi_creds.csv`.
 - Added live PowerShell build progress reporting to `scripts/build-all.ps1`.
 - Optimized `scripts/build-all.ps1` for this laptop: cached incremental builds, single-sketch builds, `-Clean`, and default 3-job compilation on 4 logical CPU threads.

@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
 #include <DNSServer.h>
 #include <SD_MMC.h>
 #include <WebServer.h>
@@ -25,6 +26,11 @@ static constexpr uint16_t COMMON_PORTS[] = {21, 22, 23, 25, 53, 80, 110, 123, 13
 
 LcdWikiEs3c28pDisplay display;
 LcdWikiFt6336Touch touch;
+Adafruit_NeoPixel pixel(
+  LCDWIKI_ES3C28P_RGB_COUNT,
+  LCDWIKI_ES3C28P_RGB_PIN,
+  NEO_GRB + NEO_KHZ800
+);
 WebServer server(80);
 DNSServer dns;
 lv_display_t *lvDisp = nullptr;
@@ -56,12 +62,15 @@ String hostText;
 String portText;
 IPAddress selectedHost;
 String scannedSsids[12];
+String scannedWifiRows[12];
 int scannedWifiCount = 0;
 
 void syncBody();
 void updateHeaderStatus();
 void setBusy(bool value);
 void updateBusyDot(lv_timer_t *);
+void selectWifiByIndex(int index);
+void wifiRowCb(lv_event_t *e);
 
 void showBootMessage(const char *line) {
   if (!display.gfx()) return;
@@ -192,6 +201,8 @@ void updateHeaderStatus() {
 
 void setBusy(bool value) {
   busy = value;
+  pixel.setPixelColor(0, busy ? pixel.Color(0, 0, 24) : 0);
+  pixel.show();
   if (busyDot) {
     if (busy) {
       busyPhase = 0;
@@ -213,6 +224,23 @@ void updateBusyDot(lv_timer_t *) {
   };
   busyPhase = (busyPhase + 1) & 7;
   lv_obj_set_pos(busyNeedle, pos[busyPhase][0], pos[busyPhase][1]);
+}
+
+void clearBody() {
+  if (!bodyBox) return;
+  lv_obj_clean(bodyBox);
+  bodyLbl = nullptr;
+}
+
+lv_obj_t *bodyLabel(const String &text) {
+  clearBody();
+  bodyLbl = lv_label_create(bodyBox);
+  lv_obj_set_width(bodyLbl, 210);
+  lv_label_set_long_mode(bodyLbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_color(bodyLbl, lv_color_hex(0x111827), 0);
+  lv_obj_clear_flag(bodyLbl, LV_OBJ_FLAG_CLICKABLE);
+  lv_label_set_text(bodyLbl, text.c_str());
+  return bodyLbl;
 }
 
 String esc(String s) {
@@ -286,8 +314,29 @@ lv_obj_t *btn(const char *t, int x, int y, int w, int h, lv_event_cb_t cb) {
 void syncBody() {
   String s = String("Log: ") + lastLog + "\n";
   if (wifiSelectionActive) {
-    s += "Tap WiFi row to select:\n";
-    s += wifiText.length() ? wifiText : "No WiFi scan yet";
+    clearBody();
+    lv_obj_t *title = lv_label_create(bodyBox);
+    lv_obj_set_width(title, 210);
+    lv_label_set_text(title, scannedWifiCount > 0 ? "Tap WiFi row to select:" : "No WiFi scan yet");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x111827), 0);
+    lv_obj_set_style_pad_bottom(title, 3, 0);
+    for (int i = 0; i < scannedWifiCount; i++) {
+      lv_obj_t *row = lv_button_create(bodyBox);
+      lv_obj_set_width(row, 210);
+      lv_obj_set_height(row, 32);
+      lv_obj_set_style_bg_color(row, lv_color_hex(0xEEF2F7), 0);
+      lv_obj_set_style_border_color(row, lv_color_hex(0xCBD5E1), 0);
+      lv_obj_set_style_border_width(row, 1, 0);
+      lv_obj_set_style_radius(row, 4, 0);
+      lv_obj_add_event_cb(row, wifiRowCb, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
+      lv_obj_t *label = lv_label_create(row);
+      lv_obj_set_width(label, 196);
+      lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+      lv_obj_set_style_text_color(label, lv_color_hex(0x111827), 0);
+      lv_label_set_text(label, scannedWifiRows[i].c_str());
+      lv_obj_center(label);
+    }
+    return;
   } else if (hostText.length()) {
     s += hostText;
   } else if (portText.length()) {
@@ -302,7 +351,7 @@ void syncBody() {
   } else if (!dataReady) {
     s = String("ERROR: SD card or ") + DATA_DIR + " missing.\nThis app requires SD logs folder.";
   }
-  lv_label_set_text(bodyLbl, s.c_str());
+  bodyLabel(s);
 }
 
 void setButtonLabel(lv_obj_t *button, const char *text) {
@@ -327,9 +376,12 @@ void scanWifi() {
   scannedWifiCount = 0;
   int n = WiFi.scanNetworks(false, true);
   for (int i = 0; i < n && i < 12; i++) {
-    scannedSsids[scannedWifiCount++] = WiFi.SSID(i);
-    wifiText += String(i) + ": " + WiFi.SSID(i) + " " + WiFi.RSSI(i) + "dBm";
-    if (savedPasswordFor(WiFi.SSID(i)).length()) wifiText += " saved";
+    const String ssid = WiFi.SSID(i);
+    scannedSsids[scannedWifiCount] = ssid;
+    scannedWifiRows[scannedWifiCount] = ssid + "  " + WiFi.RSSI(i) + "dBm";
+    if (savedPasswordFor(ssid).length()) scannedWifiRows[scannedWifiCount] += " saved";
+    scannedWifiCount++;
+    wifiText += String(i) + ": " + scannedWifiRows[scannedWifiCount - 1];
     wifiText += "\n";
   }
   logLine("WiFi scan: %d networks", n);
@@ -480,16 +532,9 @@ void rootClickCb(lv_event_t *e) {
   }
 }
 
-void outputClickCb(lv_event_t *e) {
-  if (lv_event_get_code(e) != LV_EVENT_CLICKED || !wifiSelectionActive || scannedWifiCount <= 0) return;
-  lv_point_t p;
-  lv_indev_get_point(lv_indev_active(), &p);
-  lv_area_t textArea;
-  lv_obj_get_coords(bodyLbl, &textArea);
-  const int line = (p.y - textArea.y1) / 16;
-  const int wifiIndex = line - 2;
-  if (wifiIndex >= 0 && wifiIndex < scannedWifiCount) {
-    const String ssid = scannedSsids[wifiIndex];
+void selectWifiByIndex(int index) {
+  if (index >= 0 && index < scannedWifiCount) {
+    const String ssid = scannedSsids[index];
     lv_textarea_set_text(ssidTa, ssid.c_str());
     String pass = savedPasswordFor(ssid);
     if (pass.length()) {
@@ -500,6 +545,11 @@ void outputClickCb(lv_event_t *e) {
       logLine("Selected WiFi: %s", ssid.c_str());
     }
   }
+}
+
+void wifiRowCb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  selectWifiByIndex(static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e))));
 }
 
 void setupTextArea(lv_obj_t *ta) {
@@ -573,14 +623,10 @@ void buildUi() {
   lv_obj_set_style_pad_all(bodyBox, 4, 0);
   lv_obj_set_scrollbar_mode(bodyBox, LV_SCROLLBAR_MODE_AUTO);
   lv_obj_set_scroll_dir(bodyBox, LV_DIR_VER);
+  lv_obj_set_flex_flow(bodyBox, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(bodyBox, 4, 0);
   lv_obj_add_flag(bodyBox, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(bodyBox, rootClickCb, LV_EVENT_CLICKED, nullptr);
-  lv_obj_add_event_cb(bodyBox, outputClickCb, LV_EVENT_CLICKED, nullptr);
-  bodyLbl = lv_label_create(bodyBox);
-  lv_obj_set_width(bodyLbl, 210);
-  lv_label_set_long_mode(bodyLbl, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_color(bodyLbl, lv_color_hex(0x111827), 0);
-  lv_obj_clear_flag(bodyLbl, LV_OBJ_FLAG_CLICKABLE);
   kb = lv_keyboard_create(root);
   lv_obj_set_size(kb, 240, 108);
   lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -593,6 +639,9 @@ void setup() {
   Serial0.begin(115200, SERIAL_8N1, 44, 43);
   esp32BinLoaderReturnToFactoryOnNextBoot();
   display.begin();
+  pixel.begin();
+  pixel.clear();
+  pixel.show();
   showBootMessage("Display ready");
   touch.begin();
   showBootMessage("Starting LVGL");
