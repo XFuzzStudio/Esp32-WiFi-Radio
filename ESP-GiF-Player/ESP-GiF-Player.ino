@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
 #include <AnimatedGIF.h>
 #include <DNSServer.h>
 #include <JPEGDEC.h>
@@ -38,6 +39,11 @@ struct MediaItem {
 
 LcdWikiEs3c28pDisplay display;
 LcdWikiFt6336Touch touch;
+Adafruit_NeoPixel pixel(
+  LCDWIKI_ES3C28P_RGB_COUNT,
+  LCDWIKI_ES3C28P_RGB_PIN,
+  NEO_GRB + NEO_KHZ800
+);
 AnimatedGIF gif;
 JPEGDEC jpeg;
 File gifFile;
@@ -63,12 +69,43 @@ bool dataReady = false;
 bool apActive = false;
 bool playing = false;
 bool showingPhoto = false;
+bool fileTransferActive = false;
+uint32_t fileTransferLedUntil = 0;
+uint32_t lastLedColor = 0xFFFFFFFF;
 String statusText = "Starting";
 
 void setStatus(const String &s) {
   statusText = s;
   Serial0.println(s);
   if (statusLbl) lv_label_set_text(statusLbl, statusText.c_str());
+}
+
+void setLed(uint8_t r, uint8_t g, uint8_t b) {
+  const uint32_t color = pixel.Color(r, g, b);
+  if (color == lastLedColor) return;
+  lastLedColor = color;
+  pixel.setPixelColor(0, color);
+  pixel.show();
+}
+
+void updateLed() {
+  const uint32_t now = millis();
+  const bool transferVisible = fileTransferActive || now < fileTransferLedUntil;
+  if (transferVisible) {
+    const bool on = (now / 500) % 2 == 0;
+    setLed(0, on ? 32 : 0, 0);
+    return;
+  }
+  if (apActive && WiFi.softAPgetStationNum() > 0) {
+    setLed(0, 24, 0);
+    return;
+  }
+  if (apActive) {
+    const bool beat = (now % 1400) < 120;
+    setLed(beat ? 30 : 0, beat ? 10 : 0, 0);
+    return;
+  }
+  setLed(0, 0, 0);
 }
 
 String esc(String s) {
@@ -478,6 +515,8 @@ void uploadDone() {
 void handleUpload() {
   HTTPUpload &u = server.upload();
   if (u.status == UPLOAD_FILE_START) {
+    fileTransferActive = true;
+    fileTransferLedUntil = millis() + 1000;
     String name = u.filename;
     name = name.substring(name.lastIndexOf('/') + 1);
     name.replace("\\", "");
@@ -488,9 +527,13 @@ void handleUpload() {
     const char *dir = isGifName(name) ? GIF_DIR : PHOTO_DIR;
     uploadFile = SD_MMC.open(String(dir) + "/" + name, "w");
   } else if (u.status == UPLOAD_FILE_WRITE) {
+    fileTransferActive = true;
+    fileTransferLedUntil = millis() + 1000;
     if (uploadFile) uploadFile.write(u.buf, u.currentSize);
   } else if (u.status == UPLOAD_FILE_END || u.status == UPLOAD_FILE_ABORTED) {
     if (uploadFile) uploadFile.close();
+    fileTransferActive = false;
+    fileTransferLedUntil = millis() + 1500;
   }
 }
 
@@ -508,6 +551,9 @@ void setup() {
   esp32BinLoaderReturnToFactoryOnNextBoot();
   display.begin();
   display.gfx()->setRotation(1);
+  pixel.begin();
+  pixel.clear();
+  pixel.show();
   touch.begin();
   display.gfx()->fillScreen(0x0000);
   initSd();
@@ -542,5 +588,6 @@ void loop() {
   }
   server.handleClient();
   if (apActive) dns.processNextRequest();
+  updateLed();
   delay(2);
 }

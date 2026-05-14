@@ -12,6 +12,7 @@ Version 1.1 LVGL media frame app for the LCDWiki ESP32-S3 ES3C28P.
 - Uses the `AnimatedGIF` Arduino library for decoding.
 - Uses the `JPEGDEC` Arduino library for JPEG photos.
 - Supports uncompressed 24-bit BMP files without an extra decoder.
+- Uses the onboard addressable RGB LED for AP/client/upload status.
 
 ## SD Layout
 

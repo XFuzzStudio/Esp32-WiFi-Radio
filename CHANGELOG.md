@@ -5,6 +5,7 @@
 - Documented the local folder-per-version workflow.
 - Added release workflow notes for changelog and GitHub releases.
 - Added `private_files/` as an ignored local folder for credentials and private SD data.
+- Added simple addressable RGB LED status to `ESP-GiF-Player`: orange AP heartbeat, solid green client connection, and green 500 ms blink during uploads.
 
 ## 1.2 - 2026-05-14
 

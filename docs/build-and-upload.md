@@ -105,6 +105,7 @@ card.
 - `GFX Library for Arduino`
 - `AnimatedGIF`
 - `JPEGDEC`
+- `Adafruit NeoPixel`
 
 `ESP32WiFiRadioPilot`:
 
