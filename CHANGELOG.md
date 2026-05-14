@@ -6,6 +6,10 @@
 - Added release workflow notes for changelog and GitHub releases.
 - Added `private_files/` as an ignored local folder for credentials and private SD data.
 
+## 1.2 - 2026-05-14
+
+- Reworked `ESP-GiF-Player` into a landscape media frame with GIF, JPEG, and 24-bit BMP playback.
+
 ## 1.1 - 2026-05-13
 
 - Reworked the radio UI settings from multi-theme selection to a simple dark mode.

@@ -10,7 +10,7 @@ loader apps use the same LCDWiki ESP32-S3 target and run from `ESP32BinLoader`.
 
 - `ESP32WiFiRadio/` - official LVGL internet radio for the LCDWiki ESP32-S3.
 - `ESP-WiFi-Scanner/` - LVGL Wi-Fi scanner, host finder, and port scanner.
-- `ESP-GiF-Player/` - LVGL GIF player with touch and web upload.
+- `ESP-GiF-Player/` - LVGL landscape media frame for GIFs and photos.
 - `ESP32WiFiRadioPilot/` - ESP32-C6 touch pilot using ESP-NOW.
 - `ESP32BinLoader/` - factory/rescue loader that installs `.bin` apps from SD.
 - `shared/` - ESP-NOW protocol shared by the radio and pilot.
@@ -40,8 +40,8 @@ loader apps use the same LCDWiki ESP32-S3 target and run from `ESP32BinLoader`.
 - `ESP-WiFi-Scanner` scans Wi-Fi networks, connects through an on-screen
   keyboard, scans live hosts and popular/custom ports, and can write scan logs
   only when logging is enabled from touch UI or web GUI.
-- `ESP-GiF-Player` lists and plays GIF files from SD with touch controls and web
-  upload/selection.
+- `ESP-GiF-Player` lists and plays GIF/JPG/BMP media from SD in landscape mode
+  with touch controls and web upload/selection.
 
 ## Quick Start
 

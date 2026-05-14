@@ -104,6 +104,7 @@ card.
 - `lvgl` 9.x
 - `GFX Library for Arduino`
 - `AnimatedGIF`
+- `JPEGDEC`
 
 `ESP32WiFiRadioPilot`:
 

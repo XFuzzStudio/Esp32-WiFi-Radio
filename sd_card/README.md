@@ -16,6 +16,7 @@ Each app keeps its data in its own folder:
     logs/
   ESP-GiF-Player/
     gifs/
+    photos/
     uploads/
 ```
 

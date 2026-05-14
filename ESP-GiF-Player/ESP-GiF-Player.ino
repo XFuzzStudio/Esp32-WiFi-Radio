@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <AnimatedGIF.h>
 #include <DNSServer.h>
+#include <JPEGDEC.h>
 #include <SD_MMC.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -16,16 +17,31 @@ static constexpr char APP_NAME[] = "ESP-GiF-Player";
 static constexpr char APP_VERSION[] = "1.1";
 static constexpr char DATA_DIR[] = "/apps_data/ESP-GiF-Player";
 static constexpr char GIF_DIR[] = "/apps_data/ESP-GiF-Player/gifs";
+static constexpr char PHOTO_DIR[] = "/apps_data/ESP-GiF-Player/photos";
 static constexpr char UPLOAD_DIR[] = "/apps_data/ESP-GiF-Player/uploads";
-static constexpr uint16_t W = LCDWIKI_ES3C28P_SCREEN_WIDTH;
-static constexpr uint16_t H = LCDWIKI_ES3C28P_SCREEN_HEIGHT;
+static constexpr uint16_t W = 320;
+static constexpr uint16_t H = 240;
 static constexpr uint8_t LV_ROWS = 24;
-static constexpr uint8_t MAX_GIFS = 40;
+static constexpr uint8_t MAX_MEDIA = 60;
+static constexpr uint32_t PHOTO_MS = 7000;
+
+enum class MediaType : uint8_t {
+  Gif,
+  Jpeg,
+  Bmp,
+};
+
+struct MediaItem {
+  String name;
+  MediaType type;
+};
 
 LcdWikiEs3c28pDisplay display;
 LcdWikiFt6336Touch touch;
 AnimatedGIF gif;
+JPEGDEC jpeg;
 File gifFile;
+File jpegFile;
 File uploadFile;
 WebServer server(80);
 DNSServer dns;
@@ -36,13 +52,17 @@ lv_obj_t *titleLbl = nullptr;
 lv_obj_t *statusLbl = nullptr;
 lv_obj_t *listObj = nullptr;
 uint16_t drawBuf[W * LV_ROWS];
-String gifNames[MAX_GIFS];
-uint8_t gifCount = 0;
+MediaItem mediaItems[MAX_MEDIA];
+uint8_t mediaCount = 0;
 int selected = 0;
+int gifOffsetX = 0;
+int gifOffsetY = 0;
+uint32_t photoStartedMs = 0;
 bool sdReady = false;
 bool dataReady = false;
 bool apActive = false;
 bool playing = false;
+bool showingPhoto = false;
 String statusText = "Starting";
 
 void setStatus(const String &s) {
@@ -57,6 +77,37 @@ String esc(String s) {
   s.replace(">", "&gt;");
   s.replace("\"", "&quot;");
   return s;
+}
+
+String mediaLabel(const MediaItem &item) {
+  switch (item.type) {
+    case MediaType::Gif: return String("[GIF] ") + item.name;
+    case MediaType::Jpeg: return String("[JPG] ") + item.name;
+    case MediaType::Bmp: return String("[BMP] ") + item.name;
+  }
+  return item.name;
+}
+
+bool isGifName(String n) {
+  n.toLowerCase();
+  return n.endsWith(".gif");
+}
+
+bool isJpegName(String n) {
+  n.toLowerCase();
+  return n.endsWith(".jpg") || n.endsWith(".jpeg");
+}
+
+bool isBmpName(String n) {
+  n.toLowerCase();
+  return n.endsWith(".bmp");
+}
+
+String mediaPath(int idx) {
+  if (idx < 0 || idx >= mediaCount) return "";
+  const MediaItem &item = mediaItems[idx];
+  if (item.type == MediaType::Gif) return String(GIF_DIR) + "/" + item.name;
+  return String(PHOTO_DIR) + "/" + item.name;
 }
 
 void initSd() {
@@ -74,8 +125,9 @@ void initSd() {
     if (!SD_MMC.exists("/apps_data")) SD_MMC.mkdir("/apps_data");
     if (!SD_MMC.exists(DATA_DIR)) SD_MMC.mkdir(DATA_DIR);
     if (!SD_MMC.exists(GIF_DIR)) SD_MMC.mkdir(GIF_DIR);
+    if (!SD_MMC.exists(PHOTO_DIR)) SD_MMC.mkdir(PHOTO_DIR);
     if (!SD_MMC.exists(UPLOAD_DIR)) SD_MMC.mkdir(UPLOAD_DIR);
-    dataReady = SD_MMC.exists(GIF_DIR) && SD_MMC.exists(UPLOAD_DIR);
+    dataReady = SD_MMC.exists(GIF_DIR) && SD_MMC.exists(PHOTO_DIR) && SD_MMC.exists(UPLOAD_DIR);
   }
 }
 
@@ -88,8 +140,8 @@ void touchCb(lv_indev_t *, lv_indev_data_t *d) {
   uint16_t x, y;
   if (touch.read(x, y)) {
     d->state = LV_INDEV_STATE_PRESSED;
-    d->point.x = x;
-    d->point.y = y;
+    d->point.x = y;
+    d->point.y = LCDWIKI_ES3C28P_SCREEN_WIDTH - 1 - x;
   } else {
     d->state = LV_INDEV_STATE_RELEASED;
   }
@@ -125,11 +177,12 @@ int32_t gifSeek(GIFFILE *pFile, int32_t pos) {
 }
 
 void gifDraw(GIFDRAW *pDraw) {
-  uint16_t line[320];
+  uint16_t line[W];
   int width = pDraw->iWidth;
-  if (pDraw->iX + width > W) width = W - pDraw->iX;
-  int y = pDraw->iY + pDraw->y;
-  if (y < 0 || y >= H || pDraw->iX >= W || width <= 0) return;
+  const int drawX = gifOffsetX + pDraw->iX;
+  const int y = gifOffsetY + pDraw->iY + pDraw->y;
+  if (drawX + width > W) width = W - drawX;
+  if (y < 0 || y >= H || drawX >= W || width <= 0) return;
   uint8_t *src = pDraw->pPixels;
   uint16_t *pal = pDraw->pPalette;
   if (pDraw->ucHasTransparency) {
@@ -141,68 +194,207 @@ void gifDraw(GIFDRAW *pDraw) {
         line[runEnd - runStart] = pal[src[runEnd]];
         runEnd++;
       }
-      if (runEnd > runStart) display.gfx()->draw16bitRGBBitmap(pDraw->iX + runStart, y, line, runEnd - runStart, 1);
+      if (runEnd > runStart) display.gfx()->draw16bitRGBBitmap(drawX + runStart, y, line, runEnd - runStart, 1);
       runStart = runEnd;
     }
   } else {
     for (int x = 0; x < width; x++) line[x] = pal[src[x]];
-    display.gfx()->draw16bitRGBBitmap(pDraw->iX, y, line, width, 1);
+    display.gfx()->draw16bitRGBBitmap(drawX, y, line, width, 1);
   }
 }
 
-String gifPath(int idx) {
-  if (idx < 0 || idx >= gifCount) return "";
-  return String(GIF_DIR) + "/" + gifNames[idx];
+void *jpegOpen(const char *name, int32_t *size) {
+  jpegFile = SD_MMC.open(name, FILE_READ);
+  if (!jpegFile) return nullptr;
+  *size = jpegFile.size();
+  return static_cast<void *>(&jpegFile);
 }
 
-void stopGif() {
-  if (playing) gif.close();
+void jpegClose(void *handle) {
+  File *f = static_cast<File *>(handle);
+  if (f) f->close();
+}
+
+int32_t jpegRead(JPEGFILE *pFile, uint8_t *buf, int32_t len) {
+  File *f = static_cast<File *>(pFile->fHandle);
+  return f->read(buf, len);
+}
+
+int32_t jpegSeek(JPEGFILE *pFile, int32_t pos) {
+  File *f = static_cast<File *>(pFile->fHandle);
+  f->seek(pos);
+  return pos;
+}
+
+int jpegDraw(JPEGDRAW *pDraw) {
+  if (pDraw->x >= W || pDraw->y >= H) return 1;
+  int w = pDraw->iWidth;
+  int h = pDraw->iHeight;
+  if (pDraw->x + w > W) w = W - pDraw->x;
+  if (pDraw->y + h > H) h = H - pDraw->y;
+  if (w > 0 && h > 0) display.gfx()->draw16bitRGBBitmap(pDraw->x, pDraw->y, pDraw->pPixels, w, h);
+  return 1;
+}
+
+uint16_t read16(File &f) {
+  uint16_t v = f.read();
+  v |= static_cast<uint16_t>(f.read()) << 8;
+  return v;
+}
+
+uint32_t read32(File &f) {
+  uint32_t v = read16(f);
+  v |= static_cast<uint32_t>(read16(f)) << 16;
+  return v;
+}
+
+bool drawBmp(const String &path) {
+  File f = SD_MMC.open(path, FILE_READ);
+  if (!f) return false;
+  if (read16(f) != 0x4D42) {
+    f.close();
+    return false;
+  }
+  (void)read32(f);
+  (void)read32(f);
+  const uint32_t dataOffset = read32(f);
+  const uint32_t headerSize = read32(f);
+  const int32_t bmpW = static_cast<int32_t>(read32(f));
+  int32_t bmpH = static_cast<int32_t>(read32(f));
+  if (headerSize < 40 || bmpW <= 0 || bmpH == 0) {
+    f.close();
+    return false;
+  }
+  const bool topDown = bmpH < 0;
+  if (topDown) bmpH = -bmpH;
+  const uint16_t planes = read16(f);
+  const uint16_t depth = read16(f);
+  const uint32_t compression = read32(f);
+  if (planes != 1 || depth != 24 || compression != 0) {
+    f.close();
+    return false;
+  }
+  const uint32_t rowSize = (bmpW * 3 + 3) & ~3;
+  const int x0 = max(0, (static_cast<int>(W) - static_cast<int>(bmpW)) / 2);
+  const int y0 = max(0, (static_cast<int>(H) - static_cast<int>(bmpH)) / 2);
+  const int drawW = min(static_cast<int32_t>(W), bmpW);
+  const int drawH = min(static_cast<int32_t>(H), bmpH);
+  uint16_t line[W];
+  for (int y = 0; y < drawH; y++) {
+    const int srcY = topDown ? y : (bmpH - 1 - y);
+    f.seek(dataOffset + srcY * rowSize);
+    for (int x = 0; x < drawW; x++) {
+      const uint8_t b = f.read();
+      const uint8_t g = f.read();
+      const uint8_t r = f.read();
+      line[x] = display.gfx()->color565(r, g, b);
+    }
+    display.gfx()->draw16bitRGBBitmap(x0, y0 + y, line, drawW, 1);
+    yield();
+  }
+  f.close();
+  return true;
+}
+
+void stopPlayback() {
+  if (playing && !showingPhoto) gif.close();
   playing = false;
+  showingPhoto = false;
 }
 
-void startGif(int idx) {
-  if (!dataReady || idx < 0 || idx >= gifCount) {
-    setStatus("No GIF selected");
+void nextMedia();
+
+bool showPhoto(int idx) {
+  String path = mediaPath(idx);
+  display.gfx()->fillScreen(0x0000);
+  bool ok = false;
+  if (mediaItems[idx].type == MediaType::Jpeg) {
+    if (jpeg.open(path.c_str(), jpegOpen, jpegClose, jpegRead, jpegSeek, jpegDraw)) {
+      int scale = 0;
+      while ((jpeg.getWidth() >> scale) > W || (jpeg.getHeight() >> scale) > H) {
+        if (scale >= 3) break;
+        scale++;
+      }
+      const int opts[] = {0, JPEG_SCALE_HALF, JPEG_SCALE_QUARTER, JPEG_SCALE_EIGHTH};
+      const int outW = jpeg.getWidth() >> scale;
+      const int outH = jpeg.getHeight() >> scale;
+      jpeg.setPixelType(RGB565_LITTLE_ENDIAN);
+      jpeg.decode(max(0, (W - outW) / 2), max(0, (H - outH) / 2), opts[scale]);
+      jpeg.close();
+      ok = true;
+    }
+  } else if (mediaItems[idx].type == MediaType::Bmp) {
+    ok = drawBmp(path);
+  }
+  if (ok) {
+    showingPhoto = true;
+    playing = true;
+    photoStartedMs = millis();
+    setStatus(String("Showing ") + mediaItems[idx].name);
+  }
+  return ok;
+}
+
+void startMedia(int idx) {
+  if (!dataReady || idx < 0 || idx >= mediaCount) {
+    setStatus("No media selected");
     return;
   }
-  stopGif();
+  stopPlayback();
   selected = idx;
-  display.gfx()->fillScreen(0x0000);
-  String path = gifPath(selected);
-  if (gif.open(path.c_str(), gifOpen, gifClose, gifRead, gifSeek, gifDraw)) {
-    playing = true;
-    setStatus(String("Playing ") + gifNames[selected]);
-  } else {
-    setStatus("GIF open failed");
+  if (mediaItems[selected].type == MediaType::Gif) {
+    display.gfx()->fillScreen(0x0000);
+    String path = mediaPath(selected);
+    if (gif.open(path.c_str(), gifOpen, gifClose, gifRead, gifSeek, gifDraw)) {
+      gifOffsetX = max(0, (static_cast<int>(W) - gif.getCanvasWidth()) / 2);
+      gifOffsetY = max(0, (static_cast<int>(H) - gif.getCanvasHeight()) / 2);
+      playing = true;
+      showingPhoto = false;
+      setStatus(String("Playing ") + mediaItems[selected].name);
+    } else {
+      setStatus("GIF open failed");
+    }
+  } else if (!showPhoto(selected)) {
+    setStatus("Photo open failed");
   }
 }
 
-void scanGifs() {
-  gifCount = 0;
-  if (!dataReady) return;
-  File dir = SD_MMC.open(GIF_DIR);
+void addMedia(const String &name, MediaType type) {
+  if (mediaCount >= MAX_MEDIA) return;
+  mediaItems[mediaCount++] = {name, type};
+}
+
+void scanDir(const char *dirName, bool photos) {
+  File dir = SD_MMC.open(dirName);
   if (!dir || !dir.isDirectory()) return;
-  while (gifCount < MAX_GIFS) {
+  while (mediaCount < MAX_MEDIA) {
     File e = dir.openNextFile();
     if (!e) break;
     if (!e.isDirectory()) {
       String n = e.name();
       n = n.substring(n.lastIndexOf('/') + 1);
-      String l = n;
-      l.toLowerCase();
-      if (l.endsWith(".gif")) gifNames[gifCount++] = n;
+      if (!photos && isGifName(n)) addMedia(n, MediaType::Gif);
+      if (photos && isJpegName(n)) addMedia(n, MediaType::Jpeg);
+      if (photos && isBmpName(n)) addMedia(n, MediaType::Bmp);
     }
     e.close();
   }
   dir.close();
-  if (selected >= gifCount) selected = 0;
+}
+
+void scanMedia() {
+  mediaCount = 0;
+  if (!dataReady) return;
+  scanDir(GIF_DIR, false);
+  scanDir(PHOTO_DIR, true);
+  if (selected >= mediaCount) selected = 0;
 }
 
 void rebuildList();
 
 void listEvent(lv_event_t *e) {
   int idx = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
-  startGif(idx);
+  startMedia(idx);
 }
 
 lv_obj_t *button(const char *text, int x, int y, int w, int h, lv_event_cb_t cb) {
@@ -224,8 +416,9 @@ void rebuildList() {
     lv_label_set_text(l, "ERROR: SD data folder missing");
     return;
   }
-  for (int i = 0; i < gifCount; i++) {
-    lv_obj_t *b = lv_list_add_button(listObj, nullptr, gifNames[i].c_str());
+  for (int i = 0; i < mediaCount; i++) {
+    const String label = mediaLabel(mediaItems[i]);
+    lv_obj_t *b = lv_list_add_button(listObj, nullptr, label.c_str());
     lv_obj_add_event_cb(b, listEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(i)));
   }
 }
@@ -234,20 +427,26 @@ void buildUi() {
   root = lv_screen_active();
   lv_obj_clean(root);
   titleLbl = lv_label_create(root);
-  lv_label_set_text(titleLbl, "ESP-GiF-Player 1.1");
+  lv_label_set_text(titleLbl, "ESP Media Frame 1.1");
   lv_obj_set_pos(titleLbl, 8, 6);
   statusLbl = lv_label_create(root);
-  lv_obj_set_pos(statusLbl, 8, 28);
-  lv_obj_set_width(statusLbl, 224);
-  button("Prev", 8, 52, 52, 30, [](lv_event_t *){ if (gifCount) startGif((selected + gifCount - 1) % gifCount); });
-  button(playing ? "Pause" : "Play", 64, 52, 52, 30, [](lv_event_t *){ playing ? stopGif() : startGif(selected); setStatus(playing ? "Playing" : "Paused"); });
-  button("Next", 120, 52, 52, 30, [](lv_event_t *){ if (gifCount) startGif((selected + 1) % gifCount); });
-  button("Refresh", 176, 52, 56, 30, [](lv_event_t *){ scanGifs(); rebuildList(); setStatus("List refreshed"); });
+  lv_obj_set_pos(statusLbl, 150, 8);
+  lv_obj_set_width(statusLbl, 162);
+  lv_label_set_long_mode(statusLbl, LV_LABEL_LONG_DOT);
+  button("Prev", 8, 34, 62, 30, [](lv_event_t *){ if (mediaCount) startMedia((selected + mediaCount - 1) % mediaCount); });
+  button(playing ? "Pause" : "Play", 76, 34, 62, 30, [](lv_event_t *){ playing ? stopPlayback() : startMedia(selected); setStatus(playing ? "Playing" : "Paused"); });
+  button("Next", 144, 34, 62, 30, [](lv_event_t *){ if (mediaCount) nextMedia(); });
+  button("Refresh", 212, 34, 96, 30, [](lv_event_t *){ scanMedia(); rebuildList(); setStatus("List refreshed"); });
   listObj = lv_list_create(root);
-  lv_obj_set_pos(listObj, 8, 90);
-  lv_obj_set_size(listObj, 224, 220);
+  lv_obj_set_pos(listObj, 8, 72);
+  lv_obj_set_size(listObj, 304, 160);
   rebuildList();
   setStatus(dataReady ? "Ready" : "SD data missing");
+}
+
+void nextMedia() {
+  if (!mediaCount) return;
+  startMedia((selected + 1) % mediaCount);
 }
 
 void startAp() {
@@ -259,18 +458,18 @@ void startAp() {
 
 void rootPage() {
   String h = "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'><style>body{font-family:system-ui;background:#101820;color:#edf;margin:20px}button,input{width:100%;padding:10px;margin:5px 0}li{margin:8px 0}</style>";
-  h += "<h1>ESP-GiF-Player 1.1</h1><p>" + esc(statusText) + "</p>";
-  h += "<form method=post action=/upload enctype=multipart/form-data><input type=file name=file accept='.gif,image/gif'><button>Upload GIF</button></form>";
+  h += "<h1>ESP Media Frame 1.1</h1><p>" + esc(statusText) + "</p>";
+  h += "<form method=post action=/upload enctype=multipart/form-data><input type=file name=file accept='.gif,.jpg,.jpeg,.bmp,image/gif,image/jpeg,image/bmp'><button>Upload media</button></form>";
   h += "<form method=post action=/refresh><button>Refresh list</button></form><ol>";
-  for (int i = 0; i < gifCount; i++) {
-    h += "<li>" + esc(gifNames[i]) + "<form method=post action=/play><input type=hidden name=i value='" + String(i) + "'><button>Play</button></form><form method=post action=/delete><input type=hidden name=i value='" + String(i) + "'><button>Delete</button></form></li>";
+  for (int i = 0; i < mediaCount; i++) {
+    h += "<li>" + esc(mediaLabel(mediaItems[i])) + "<form method=post action=/play><input type=hidden name=i value='" + String(i) + "'><button>Play</button></form><form method=post action=/delete><input type=hidden name=i value='" + String(i) + "'><button>Delete</button></form></li>";
   }
   h += "</ol><form method=post action=/pause><button>Play/Pause</button></form>";
   server.send(200, "text/html", h);
 }
 
 void uploadDone() {
-  scanGifs();
+  scanMedia();
   rebuildList();
   server.sendHeader("Location", "/", true);
   server.send(302);
@@ -283,8 +482,11 @@ void handleUpload() {
     name = name.substring(name.lastIndexOf('/') + 1);
     name.replace("\\", "");
     name.replace("/", "");
-    if (!name.endsWith(".gif") && !name.endsWith(".GIF")) name += ".gif";
-    uploadFile = SD_MMC.open(String(GIF_DIR) + "/" + name, "w");
+    String lower = name;
+    lower.toLowerCase();
+    if (!isGifName(lower) && !isJpegName(lower) && !isBmpName(lower)) name += ".jpg";
+    const char *dir = isGifName(name) ? GIF_DIR : PHOTO_DIR;
+    uploadFile = SD_MMC.open(String(dir) + "/" + name, "w");
   } else if (u.status == UPLOAD_FILE_WRITE) {
     if (uploadFile) uploadFile.write(u.buf, u.currentSize);
   } else if (u.status == UPLOAD_FILE_END || u.status == UPLOAD_FILE_ABORTED) {
@@ -295,20 +497,21 @@ void handleUpload() {
 void setupRoutes() {
   server.on("/", rootPage);
   server.on("/upload", HTTP_POST, uploadDone, handleUpload);
-  server.on("/refresh", HTTP_POST, [](){ scanGifs(); rebuildList(); server.sendHeader("Location","/"); server.send(302); });
-  server.on("/play", HTTP_POST, [](){ startGif(server.arg("i").toInt()); server.sendHeader("Location","/"); server.send(302); });
-  server.on("/pause", HTTP_POST, [](){ playing ? stopGif() : startGif(selected); server.sendHeader("Location","/"); server.send(302); });
-  server.on("/delete", HTTP_POST, [](){ int i=server.arg("i").toInt(); if (i>=0 && i<gifCount) SD_MMC.remove(gifPath(i)); scanGifs(); rebuildList(); server.sendHeader("Location","/"); server.send(302); });
+  server.on("/refresh", HTTP_POST, [](){ scanMedia(); rebuildList(); server.sendHeader("Location","/"); server.send(302); });
+  server.on("/play", HTTP_POST, [](){ startMedia(server.arg("i").toInt()); server.sendHeader("Location","/"); server.send(302); });
+  server.on("/pause", HTTP_POST, [](){ playing ? stopPlayback() : startMedia(selected); server.sendHeader("Location","/"); server.send(302); });
+  server.on("/delete", HTTP_POST, [](){ int i=server.arg("i").toInt(); if (i>=0 && i<mediaCount) SD_MMC.remove(mediaPath(i)); scanMedia(); rebuildList(); server.sendHeader("Location","/"); server.send(302); });
 }
 
 void setup() {
   Serial0.begin(115200, SERIAL_8N1, 44, 43);
   esp32BinLoaderReturnToFactoryOnNextBoot();
   display.begin();
+  display.gfx()->setRotation(1);
   touch.begin();
   display.gfx()->fillScreen(0x0000);
   initSd();
-  scanGifs();
+  scanMedia();
   gif.begin(LITTLE_ENDIAN_PIXELS);
   lv_init();
   lvDisp = lv_display_create(W, H);
@@ -325,11 +528,14 @@ void setup() {
 }
 
 void loop() {
-  if (playing) {
+  if (playing && !showingPhoto) {
     int delayMs = 0;
     if (!gif.playFrame(true, &delayMs, nullptr)) {
-      gif.reset();
+      gif.close();
+      nextMedia();
     }
+  } else if (playing && showingPhoto) {
+    if (millis() - photoStartedMs >= PHOTO_MS) nextMedia();
   } else {
     lv_tick_inc(5);
     lv_timer_handler();

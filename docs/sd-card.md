@@ -18,6 +18,7 @@ Copy the sample files from `sd_card/` to the root of the microSD card:
     logs/
   ESP-GiF-Player/
     gifs/
+    photos/
     uploads/
 ```
 

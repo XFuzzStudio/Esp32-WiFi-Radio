@@ -1,5 +1,24 @@
 # Version Notes
 
+## V1.2
+
+Source folder: `Desktop/github/Esp32-WiFi-Radio/V1.2`
+
+Base: copied from `V1.1`.
+
+Planned release tag: `v1.2`
+
+Status: media-frame update.
+
+Summary:
+
+- `ESP-GiF-Player` now works as a landscape media frame.
+- GIFs still load from `/apps_data/ESP-GiF-Player/gifs`.
+- JPG/JPEG and uncompressed 24-bit BMP photos load from `/apps_data/ESP-GiF-Player/photos`.
+- Web upload accepts GIF/JPG/BMP media and stores files in the matching SD folder.
+- Slideshow playback advances from GIFs to photos and back through the shared media list.
+- `JPEGDEC` is now required for the media frame build.
+
 ## V1.1
 
 Source folder: `Desktop/github/Esp32-WiFi-Radio/V1.1`
