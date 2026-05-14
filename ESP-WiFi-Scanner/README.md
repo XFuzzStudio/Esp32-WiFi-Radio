@@ -15,6 +15,8 @@ Version 1.1 LVGL network utility app for the LCDWiki ESP32-S3 ES3C28P.
 - Results are shown in a larger touch-scrollable output panel; Wi-Fi row
   selection is active only immediately after Wi-Fi scans.
 - A top-right activity dot is shown while Wi-Fi, host, or port scans are running.
+- The display and LVGL UI start before SD/AP initialization, so startup status is
+  visible even if SD mounting is slow.
 - Writes scan logs to `/apps_data/ESP-WiFi-Scanner/logs/scanner.log` only when
   logging is enabled from the touch UI or web GUI.
 - Saves Wi-Fi credentials locally on SD in

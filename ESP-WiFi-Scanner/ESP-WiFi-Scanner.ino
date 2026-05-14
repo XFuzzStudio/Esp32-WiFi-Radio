@@ -42,6 +42,7 @@ lv_obj_t *kb = nullptr;
 uint16_t drawBuf[W * LV_ROWS];
 bool sdReady = false;
 bool dataReady = false;
+bool sdChecked = false;
 bool apActive = false;
 bool loggingEnabled = false;
 bool busy = false;
@@ -57,6 +58,28 @@ int scannedWifiCount = 0;
 void syncBody();
 void updateHeaderStatus();
 void setBusy(bool value);
+
+void showBootMessage(const char *line) {
+  if (!display.gfx()) return;
+  display.gfx()->fillScreen(0xFFFF);
+  display.gfx()->setTextWrap(false);
+  display.gfx()->setTextSize(2);
+  display.gfx()->setTextColor(0x0000);
+  display.gfx()->setCursor(10, 24);
+  display.gfx()->print("WiFi Scanner");
+  display.gfx()->setTextSize(1);
+  display.gfx()->setCursor(10, 56);
+  display.gfx()->print(line);
+}
+
+void pumpLvgl(uint16_t ms) {
+  const uint32_t endAt = millis() + ms;
+  do {
+    lv_tick_inc(5);
+    lv_timer_handler();
+    delay(5);
+  } while (millis() < endAt);
+}
 
 String csvEscape(String s) {
   s.replace("\\", "\\\\");
@@ -187,6 +210,7 @@ String esc(String s) {
 void initSd() {
   sdReady = false;
   dataReady = false;
+  sdChecked = false;
   SD_MMC.end();
   SD_MMC.setPins(LCDWIKI_ES3C28P_SD_CLK, LCDWIKI_ES3C28P_SD_CMD, LCDWIKI_ES3C28P_SD_D0, LCDWIKI_ES3C28P_SD_D1, LCDWIKI_ES3C28P_SD_D2, LCDWIKI_ES3C28P_SD_D3);
   sdReady = SD_MMC.begin("/sdcard", false, false, SDMMC_FREQ_DEFAULT, 8);
@@ -208,6 +232,7 @@ void initSd() {
       }
     }
   }
+  sdChecked = true;
 }
 
 void flushCb(lv_display_t *, const lv_area_t *a, uint8_t *px) {
@@ -256,7 +281,11 @@ void syncBody() {
   } else {
     s += "Ready";
   }
-  if (!dataReady) s = String("ERROR: SD card or ") + DATA_DIR + " missing.\nThis app requires SD logs folder.";
+  if (!sdChecked) {
+    s = "Starting scanner...\nPreparing display, SD and WiFi.";
+  } else if (!dataReady) {
+    s = String("ERROR: SD card or ") + DATA_DIR + " missing.\nThis app requires SD logs folder.";
+  }
   lv_label_set_text(bodyLbl, s.c_str());
 }
 
@@ -541,8 +570,9 @@ void setup() {
   Serial0.begin(115200, SERIAL_8N1, 44, 43);
   esp32BinLoaderReturnToFactoryOnNextBoot();
   display.begin();
+  showBootMessage("Display ready");
   touch.begin();
-  initSd();
+  showBootMessage("Starting LVGL");
   lv_init();
   lvDisp = lv_display_create(W, H);
   lv_display_set_color_format(lvDisp, LV_COLOR_FORMAT_RGB565);
@@ -552,6 +582,14 @@ void setup() {
   lv_indev_set_type(lvInput, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(lvInput, touchCb);
   buildUi();
+  pumpLvgl(150);
+  logLine("Mounting SD");
+  pumpLvgl(50);
+  initSd();
+  logLine(sdReady ? "SD ready" : "SD mount failed");
+  pumpLvgl(50);
+  logLine("Starting AP");
+  pumpLvgl(50);
   startAp();
   setupRoutes();
   server.begin();

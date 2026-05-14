@@ -25,6 +25,7 @@
 - Reworked the scanner header to show Wi-Fi/AP state and moved results into a larger output panel.
 - Prevents host/port output taps from selecting stale Wi-Fi rows after a Wi-Fi scan.
 - Added a top-right scanner activity indicator while Wi-Fi, host, or port scans are running.
+- Starts the scanner display/UI before SD and AP initialization to avoid a black screen during slow startup.
 - Saves scanner Wi-Fi passwords locally on SD in `/apps_data/ESP-WiFi-Scanner/wifi_creds.csv`.
 - Added live PowerShell build progress reporting to `scripts/build-all.ps1`.
 - Optimized `scripts/build-all.ps1` for this laptop: cached incremental builds, single-sketch builds, `-Clean`, and default 3-job compilation on 4 logical CPU threads.
