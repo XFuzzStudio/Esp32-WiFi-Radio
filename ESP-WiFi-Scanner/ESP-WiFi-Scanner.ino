@@ -31,7 +31,7 @@ lv_display_t *lvDisp = nullptr;
 lv_indev_t *lvInput = nullptr;
 lv_obj_t *root = nullptr;
 lv_obj_t *statusLbl = nullptr;
-lv_obj_t *busySpinner = nullptr;
+lv_obj_t *busyDot = nullptr;
 lv_obj_t *bodyBox = nullptr;
 lv_obj_t *bodyLbl = nullptr;
 lv_obj_t *logBtn = nullptr;
@@ -165,11 +165,11 @@ void updateHeaderStatus() {
 
 void setBusy(bool value) {
   busy = value;
-  if (busySpinner) {
+  if (busyDot) {
     if (busy) {
-      lv_obj_clear_flag(busySpinner, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_clear_flag(busyDot, LV_OBJ_FLAG_HIDDEN);
     } else {
-      lv_obj_add_flag(busySpinner, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(busyDot, LV_OBJ_FLAG_HIDDEN);
     }
   }
   updateHeaderStatus();
@@ -230,9 +230,14 @@ lv_obj_t *btn(const char *t, int x, int y, int w, int h, lv_event_cb_t cb) {
   lv_obj_t *b = lv_button_create(root);
   lv_obj_set_pos(b, x, y);
   lv_obj_set_size(b, w, h);
+  lv_obj_set_style_bg_color(b, lv_color_hex(0xEEF2F7), 0);
+  lv_obj_set_style_border_color(b, lv_color_hex(0xCBD5E1), 0);
+  lv_obj_set_style_border_width(b, 1, 0);
+  lv_obj_set_style_radius(b, 5, 0);
   lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *l = lv_label_create(b);
   lv_label_set_text(l, t);
+  lv_obj_set_style_text_color(l, lv_color_hex(0x111827), 0);
   lv_obj_center(l);
   return b;
 }
@@ -455,6 +460,11 @@ void outputClickCb(lv_event_t *e) {
 void setupTextArea(lv_obj_t *ta) {
   lv_textarea_set_one_line(ta, true);
   lv_textarea_set_cursor_click_pos(ta, true);
+  lv_obj_set_style_bg_color(ta, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_text_color(ta, lv_color_hex(0x111827), 0);
+  lv_obj_set_style_border_color(ta, lv_color_hex(0xCBD5E1), 0);
+  lv_obj_set_style_border_width(ta, 1, 0);
+  lv_obj_set_style_radius(ta, 5, 0);
   lv_obj_clear_flag(ta, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(ta, focusCb, LV_EVENT_FOCUSED, nullptr);
 }
@@ -462,16 +472,24 @@ void setupTextArea(lv_obj_t *ta) {
 void buildUi() {
   root = lv_screen_active();
   lv_obj_clean(root);
+  lv_obj_set_style_bg_color(root, lv_color_hex(0xF8FAFC), 0);
+  lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
   lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(root, rootClickCb, LV_EVENT_CLICKED, nullptr);
   statusLbl = lv_label_create(root);
   lv_obj_set_pos(statusLbl, 8, 8);
   lv_obj_set_width(statusLbl, 194);
   lv_label_set_long_mode(statusLbl, LV_LABEL_LONG_DOT);
-  busySpinner = lv_spinner_create(root);
-  lv_obj_set_pos(busySpinner, 210, 6);
-  lv_obj_set_size(busySpinner, 22, 22);
-  lv_obj_add_flag(busySpinner, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_style_text_color(statusLbl, lv_color_hex(0x111827), 0);
+  busyDot = lv_obj_create(root);
+  lv_obj_set_pos(busyDot, 212, 8);
+  lv_obj_set_size(busyDot, 18, 18);
+  lv_obj_set_style_radius(busyDot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(busyDot, lv_color_hex(0xDBEAFE), 0);
+  lv_obj_set_style_border_color(busyDot, lv_color_hex(0x2563EB), 0);
+  lv_obj_set_style_border_width(busyDot, 3, 0);
+  lv_obj_clear_flag(busyDot, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(busyDot, LV_OBJ_FLAG_HIDDEN);
   ssidTa = lv_textarea_create(root);
   lv_obj_set_pos(ssidTa, 8, 34);
   lv_obj_set_size(ssidTa, 108, 30);
@@ -496,6 +514,10 @@ void buildUi() {
   bodyBox = lv_obj_create(root);
   lv_obj_set_pos(bodyBox, 8, 172);
   lv_obj_set_size(bodyBox, 224, 140);
+  lv_obj_set_style_bg_color(bodyBox, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_border_color(bodyBox, lv_color_hex(0xCBD5E1), 0);
+  lv_obj_set_style_border_width(bodyBox, 1, 0);
+  lv_obj_set_style_radius(bodyBox, 5, 0);
   lv_obj_set_scroll_dir(bodyBox, LV_DIR_VER);
   lv_obj_add_flag(bodyBox, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(bodyBox, rootClickCb, LV_EVENT_CLICKED, nullptr);
@@ -503,6 +525,7 @@ void buildUi() {
   bodyLbl = lv_label_create(bodyBox);
   lv_obj_set_width(bodyLbl, 204);
   lv_label_set_long_mode(bodyLbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_color(bodyLbl, lv_color_hex(0x111827), 0);
   lv_obj_add_flag(bodyLbl, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(bodyLbl, rootClickCb, LV_EVENT_CLICKED, nullptr);
   lv_obj_add_event_cb(bodyLbl, outputClickCb, LV_EVENT_CLICKED, nullptr);
