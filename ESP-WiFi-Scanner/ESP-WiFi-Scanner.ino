@@ -32,6 +32,8 @@ lv_indev_t *lvInput = nullptr;
 lv_obj_t *root = nullptr;
 lv_obj_t *statusLbl = nullptr;
 lv_obj_t *busyDot = nullptr;
+lv_obj_t *busyNeedle = nullptr;
+lv_timer_t *busyTimer = nullptr;
 lv_obj_t *bodyBox = nullptr;
 lv_obj_t *bodyLbl = nullptr;
 lv_obj_t *logBtn = nullptr;
@@ -47,6 +49,7 @@ bool apActive = false;
 bool loggingEnabled = false;
 bool busy = false;
 bool wifiSelectionActive = false;
+uint8_t busyPhase = 0;
 String lastLog = "Starting";
 String wifiText;
 String hostText;
@@ -58,6 +61,7 @@ int scannedWifiCount = 0;
 void syncBody();
 void updateHeaderStatus();
 void setBusy(bool value);
+void updateBusyDot(lv_timer_t *);
 
 void showBootMessage(const char *line) {
   if (!display.gfx()) return;
@@ -190,13 +194,25 @@ void setBusy(bool value) {
   busy = value;
   if (busyDot) {
     if (busy) {
+      busyPhase = 0;
       lv_obj_clear_flag(busyDot, LV_OBJ_FLAG_HIDDEN);
+      updateBusyDot(nullptr);
     } else {
       lv_obj_add_flag(busyDot, LV_OBJ_FLAG_HIDDEN);
     }
   }
   updateHeaderStatus();
   lv_timer_handler();
+}
+
+void updateBusyDot(lv_timer_t *) {
+  if (!busy || !busyNeedle) return;
+  static constexpr int8_t pos[][2] = {
+    {11, 1}, {14, 4}, {14, 11}, {11, 14},
+    {4, 14}, {1, 11}, {1, 4}, {4, 1}
+  };
+  busyPhase = (busyPhase + 1) & 7;
+  lv_obj_set_pos(busyNeedle, pos[busyPhase][0], pos[busyPhase][1]);
 }
 
 String esc(String s) {
@@ -468,9 +484,9 @@ void outputClickCb(lv_event_t *e) {
   if (lv_event_get_code(e) != LV_EVENT_CLICKED || !wifiSelectionActive || scannedWifiCount <= 0) return;
   lv_point_t p;
   lv_indev_get_point(lv_indev_active(), &p);
-  lv_area_t a;
-  lv_obj_get_coords(bodyBox, &a);
-  const int line = ((p.y - a.y1) + lv_obj_get_scroll_y(bodyBox)) / 16;
+  lv_area_t textArea;
+  lv_obj_get_coords(bodyLbl, &textArea);
+  const int line = (p.y - textArea.y1) / 16;
   const int wifiIndex = line - 2;
   if (wifiIndex >= 0 && wifiIndex < scannedWifiCount) {
     const String ssid = scannedSsids[wifiIndex];
@@ -519,6 +535,13 @@ void buildUi() {
   lv_obj_set_style_border_width(busyDot, 3, 0);
   lv_obj_clear_flag(busyDot, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(busyDot, LV_OBJ_FLAG_HIDDEN);
+  busyNeedle = lv_obj_create(busyDot);
+  lv_obj_set_size(busyNeedle, 5, 5);
+  lv_obj_set_style_radius(busyNeedle, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(busyNeedle, lv_color_hex(0x1D4ED8), 0);
+  lv_obj_set_style_border_width(busyNeedle, 0, 0);
+  lv_obj_clear_flag(busyNeedle, LV_OBJ_FLAG_SCROLLABLE);
+  busyTimer = lv_timer_create(updateBusyDot, 90, nullptr);
   ssidTa = lv_textarea_create(root);
   lv_obj_set_pos(ssidTa, 8, 34);
   lv_obj_set_size(ssidTa, 108, 30);
@@ -547,17 +570,17 @@ void buildUi() {
   lv_obj_set_style_border_color(bodyBox, lv_color_hex(0xCBD5E1), 0);
   lv_obj_set_style_border_width(bodyBox, 1, 0);
   lv_obj_set_style_radius(bodyBox, 5, 0);
+  lv_obj_set_style_pad_all(bodyBox, 4, 0);
+  lv_obj_set_scrollbar_mode(bodyBox, LV_SCROLLBAR_MODE_AUTO);
   lv_obj_set_scroll_dir(bodyBox, LV_DIR_VER);
   lv_obj_add_flag(bodyBox, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(bodyBox, rootClickCb, LV_EVENT_CLICKED, nullptr);
   lv_obj_add_event_cb(bodyBox, outputClickCb, LV_EVENT_CLICKED, nullptr);
   bodyLbl = lv_label_create(bodyBox);
-  lv_obj_set_width(bodyLbl, 204);
+  lv_obj_set_width(bodyLbl, 210);
   lv_label_set_long_mode(bodyLbl, LV_LABEL_LONG_WRAP);
   lv_obj_set_style_text_color(bodyLbl, lv_color_hex(0x111827), 0);
-  lv_obj_add_flag(bodyLbl, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(bodyLbl, rootClickCb, LV_EVENT_CLICKED, nullptr);
-  lv_obj_add_event_cb(bodyLbl, outputClickCb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_clear_flag(bodyLbl, LV_OBJ_FLAG_CLICKABLE);
   kb = lv_keyboard_create(root);
   lv_obj_set_size(kb, 240, 108);
   lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
